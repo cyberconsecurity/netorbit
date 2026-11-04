@@ -732,6 +732,10 @@ const BASE = (process.env.NETORBIT_PREVIEW || "http://localhost:8766").replace(/
     const box = await mapBox(p);
     const bg = await backgroundPoint(p);
     assert.ok(bg, "found a spot on the map background");
+    // Touches that reach the page are counted at the document, where dashboards that swipe between views listen.
+    await p.evaluate(() => { window.pageTouches = 0; ["touchstart", "touchmove"].forEach((t) => document.addEventListener(t, () => window.pageTouches++)); });
+    const pageTouches = () => p.evaluate(() => window.pageTouches);
+    const resetPageTouches = () => p.evaluate(() => { window.pageTouches = 0; });
 
     // A tap on a device (the page has not scrolled yet).
     const tvKey = await keyOfIn(p, "Bedroom TV");
@@ -755,8 +759,19 @@ const BASE = (process.env.NETORBIT_PREVIEW || "http://localhost:8766").replace(/
     }, null, { polling: "raf" });
     assert.ok((await p.evaluate(() => window.scrollY)) > 60, "a one-finger swipe over the whole map scrolls the page");
     assert.strictEqual(await viewBox(p), whole, "and leaves the map alone");
+    assert.ok((await pageTouches()) > 0, "at the whole map, touches on the map reach the page");
     await p.evaluate(() => window.scrollTo(0, 0));
     await wait(100);
+
+    // At the whole map a sideways swipe over the map reaches the page too (a dashboard may change views on it) and
+    // moves nothing here: there is nothing to pan.
+    await resetPageTouches();
+    await touch("touchStart", [bg]);
+    for (let i = 1; i <= 8; i++) { await touch("touchMove", [{ x: bg.x - i * 12, y: bg.y }]); await wait(16); }
+    await touch("touchEnd", []);
+    await wait(200);
+    assert.ok((await pageTouches()) > 0, "at the whole map, a sideways swipe over the map reaches the page");
+    assert.strictEqual(await viewBox(p), whole, "and leaves the map alone");
 
     // A pinch over the map zooms it.
     const b2 = await mapBox(p);
@@ -799,11 +814,20 @@ const BASE = (process.env.NETORBIT_PREVIEW || "http://localhost:8766").replace(/
       return null;
     });
     assert.ok(onDevice, "found a device circle inside the zoomed map");
+    await resetPageTouches();
     await pan(onDevice, "from a device");
     const bg2 = await backgroundPoint(p);
     assert.ok(bg2, "found a background spot in the zoomed map");
     await pan({ x: Math.max(bg2.x, (await mapBox(p)).x + 140), y: bg2.y }, "from the background");
-    console.log("phone touch ok: swipe scrolls, tap opens details, pinch zooms, drag pans");
+    // Zoomed in, those touches stopped at the map: a dashboard that swipes between views never saw them. A swipe over
+    // the card's header still reaches the page.
+    assert.strictEqual(await pageTouches(), 0, "zoomed in, touches on the map stop at the map");
+    const head = await centerIn(p, ".head");
+    await touch("touchStart", [head]);
+    for (let i = 1; i <= 8; i++) { await touch("touchMove", [{ x: head.x - i * 12, y: head.y }]); await wait(16); }
+    await touch("touchEnd", []);
+    assert.ok((await pageTouches()) > 0, "a swipe over the card's header reaches the page");
+    console.log("phone touch ok: swipe scrolls, tap opens details, pinch zooms, drag pans, map touches stop at the map only while zoomed");
     await p.close();
   }
 
