@@ -151,6 +151,24 @@ async def test_manual_beats_automatic_and_reset(hass: HomeAssistant, fake_net) -
     assert tv.attributes["link"] == "hub:u6_lite_hall" and tv.attributes["placement"] == "snmp"
 
 
+async def test_hub_given_by_mac_is_the_exact_match(hass: HomeAssistant, fake_net) -> None:
+    """Access points bought together have consecutive MACs; the one named must win over a near one."""
+    hubs = [
+        {"id": "ap_a", "name": "AP A", "host": "192.0.2.6", "mac": "00:00:5e:00:53:04", "type": "access_point", "parent": "gateway"},
+        {"id": "ap_b", "name": "AP B", "host": "192.0.2.7", "mac": "00:00:5e:00:53:05", "type": "access_point", "parent": "gateway"},
+    ]
+    fake_net.alive = {GATEWAY, "192.0.2.10"}
+    fake_net.arp = {"192.0.2.10": TV_MAC}
+    entry = _entry("auto", hubs=hubs)
+    await _setup(hass, entry)
+
+    await hass.services.async_call(DOMAIN, "assign_device", {"device": TV_MAC, "hub": "00:00:5E:00:53:05"}, blocking=True)
+    assert entry.options["devices"][TV_MAC]["hub"] == "ap_b"
+    # A radio MAC a little off one AP's LAN MAC still resolves when only one hub is that close.
+    await hass.services.async_call(DOMAIN, "assign_device", {"device": TV_MAC, "hub": "00:00:5e:00:53:15"}, blocking=True)
+    assert entry.options["devices"][TV_MAC]["hub"] == "ap_b"
+
+
 async def test_new_hub_takes_its_port_at_once(hass: HomeAssistant, fake_net) -> None:
     """Making a device a hub places the devices behind its switch port straight away, from the
     tables already read, without waiting for the next sweep. A device the switches only see

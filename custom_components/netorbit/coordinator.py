@@ -1127,8 +1127,12 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         for hub in self.opts[CONF_HUBS]:
             if hub["id"] == ref or (hub.get("name") or "").lower() == low or hub.get("host") == ref:
                 return hub["id"]
-            if mac and macs_close(hub.get("mac") or (self._seen.get(f"hub:{hub['id']}") or {}).get("mac"), mac):
-                return hub["id"]
+        if mac:
+            # The hub with exactly this MAC first; a near one (a radio MAC a few off the LAN MAC) only
+            # when it is the only hub that close, so neighbouring access points are never confused.
+            hub_id = self._hub_for_mac(mac)
+            if hub_id:
+                return hub_id
         partial = [h["id"] for h in self.opts[CONF_HUBS] if low in (h.get("name") or "").lower()]
         return partial[0] if len(partial) == 1 else None
 
