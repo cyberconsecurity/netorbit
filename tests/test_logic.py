@@ -6,12 +6,12 @@ import pytest
 
 from custom_components.netorbit.logic import (
     compute_status,
-    rollup_status,
     fallback_name,
     guess_icon,
     is_random_mac,
     normalize_mac,
     parse_proc_arp,
+    rollup_status,
     short_hostname,
     slugify_id,
     validate_subnet,

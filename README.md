@@ -174,7 +174,9 @@ Under the integration's **Configure** menu:
 
 **Allowed to sleep** is for TVs, consoles and anything else that's off a lot. They still show their status but never fire the stale event.
 
-**Hubs with no IP**, such as an unmanaged switch or an access point in bridge mode, can't be pinged, so they take their status from what's behind them: green if anything behind them is online, yellow if something was seen recently, red only when nothing behind them has been seen for the "not seen" window, and grey when nothing is behind them yet. Sleeping devices that are off don't count.
+**Hubs with no IP**, such as an unmanaged switch or an access point in bridge mode, can't be pinged, so they take their status from what's behind them: green if anything behind them is online, yellow if something was seen recently, red only when nothing behind them has been seen for the "not seen" window, and grey when nothing is behind them yet or when the only devices behind them are sleeping and off.
+
+A hub with no IP that has the Home Assistant host behind it stays green as long as Home Assistant can ping itself, which it normally can.
 
 **The internet check** (on by default) puts an Internet node just above your router. Each ping round also pings two public DNS servers, Cloudflare's `1.1.1.1` and Google's `8.8.8.8`. The node turns red ("Internet down") when neither answers for two rounds in a row while your router still answers, so you can tell an internet outage from a Wi-Fi problem. If the router isn't answering either, it shows grey, because NetOrbit can't tell. Turn it off under **Settings** if you'd rather NetOrbit never sends anything outside your network.
 

@@ -148,7 +148,7 @@ async def test_stale_and_recovered(hass: HomeAssistant, fake_net, freezer: Froze
     await _advance(hass, freezer, 61)
     assert _node_states(hass)[name].state == "recent"
 
-    await _advance(hass, freezer, 25*3600)
+    await _advance(hass, freezer, 25 * 3600)
     assert _node_states(hass)[name].state == "stale"
     assert [e.data["name"] for e in stale] == [name]
 
@@ -178,7 +178,7 @@ async def test_addressless_hubs_follow_what_is_behind_them(hass: HomeAssistant, 
     assert states() == {"Desk PC": "online", "Bed Switch": "online", "Shop Switch": "online", "Spare Switch": "unknown"}
 
     # well past the window, still green while the device behind them answers
-    await _advance(hass, freezer, 25*3600)
+    await _advance(hass, freezer, 25 * 3600)
     assert states() == {"Desk PC": "online", "Bed Switch": "online", "Shop Switch": "online", "Spare Switch": "unknown"}
     assert stale == []
 
@@ -186,9 +186,84 @@ async def test_addressless_hubs_follow_what_is_behind_them(hass: HomeAssistant, 
     fake_net.alive.discard("192.0.2.11")
     await _advance(hass, freezer, 61)
     assert states()["Shop Switch"] == "recent"
-    await _advance(hass, freezer, 25*3600)
+    await _advance(hass, freezer, 25 * 3600)
     assert states() == {"Desk PC": "stale", "Bed Switch": "stale", "Shop Switch": "stale", "Spare Switch": "unknown"}
     assert sorted(e.data["name"] for e in stale) == ["Bed Switch", "Desk PC", "Shop Switch"]
+
+
+async def test_addressless_hub_recovers_with_the_device_behind_it(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """The hub goes stale with its only device and fires the recovered event when it comes back."""
+    fake_net.alive = {GATEWAY, "192.0.2.11"}
+    fake_net.arp = {"192.0.2.11": MAC_B}
+    back = async_capture_events(hass, "netorbit_device_recovered")
+    hubs = [{"id": "shop", "name": "Shop Switch", "host": None, "type": "switch", "parent": "gateway"}]
+    await _setup(hass, _entry("manual", hubs=hubs, devices={MAC_B: {"name": "Desk PC", "hub": "shop"}}))
+
+    fake_net.alive.discard("192.0.2.11")
+    await _advance(hass, freezer, 61)
+    await _advance(hass, freezer, 25 * 3600)
+    nodes = _node_states(hass)
+    assert (nodes["Desk PC"].state, nodes["Shop Switch"].state) == ("stale", "stale")
+    assert back == []
+
+    fake_net.alive.add("192.0.2.11")
+    await _advance(hass, freezer, 61)
+    nodes = _node_states(hass)
+    assert (nodes["Desk PC"].state, nodes["Shop Switch"].state) == ("online", "online")
+    assert sorted(e.data["name"] for e in back) == ["Desk PC", "Shop Switch"]
+
+
+async def test_addressless_hub_with_only_a_sleeping_device_stays_grey(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """A sleepy device that is off doesn't count, so the hub is unknown (grey) and never stale."""
+    fake_net.alive = {GATEWAY, "192.0.2.11"}
+    fake_net.arp = {"192.0.2.11": MAC_B}
+    stale = async_capture_events(hass, "netorbit_device_stale")
+    hubs = [{"id": "shop", "name": "Shop Switch", "host": None, "type": "switch", "parent": "gateway"}]
+    await _setup(hass, _entry("manual", hubs=hubs, devices={MAC_B: {"name": "Shop TV", "hub": "shop", "sleepy": True}}))
+    nodes = _node_states(hass)
+    assert (nodes["Shop TV"].state, nodes["Shop Switch"].state) == ("online", "online")
+
+    # the TV goes to sleep and stays off past the window
+    fake_net.alive.discard("192.0.2.11")
+    await _advance(hass, freezer, 61)
+    nodes = _node_states(hass)
+    assert (nodes["Shop TV"].state, nodes["Shop Switch"].state) == ("recent", "unknown")
+    await _advance(hass, freezer, 25 * 3600)
+    nodes = _node_states(hass)
+    assert (nodes["Shop TV"].state, nodes["Shop Switch"].state) == ("stale", "unknown")
+    assert stale == []
+
+
+async def test_addressless_hub_follows_a_pingable_hub_behind_it(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """A hub that has an address is judged by its ping, and the addressless hub above it follows it."""
+    fake_net.alive = {GATEWAY, "192.0.2.5"}
+    hubs = [
+        {"id": "shop", "name": "Shop Switch", "host": None, "type": "switch", "parent": "gateway"},
+        {"id": "ap", "name": "Shop AP", "host": "192.0.2.5", "type": "access_point", "parent": "shop"},
+    ]
+    stale = async_capture_events(hass, "netorbit_device_stale")
+    back = async_capture_events(hass, "netorbit_device_recovered")
+    await _setup(hass, _entry("manual", hubs=hubs))
+
+    def states() -> tuple[str, str]:
+        nodes = _node_states(hass)
+        return nodes["Shop AP"].state, nodes["Shop Switch"].state
+
+    assert states() == ("online", "online")
+    await _advance(hass, freezer, 25 * 3600)
+    assert states() == ("online", "online")
+
+    fake_net.alive.discard("192.0.2.5")
+    await _advance(hass, freezer, 61)
+    assert states() == ("recent", "recent")
+    await _advance(hass, freezer, 25 * 3600)
+    assert states() == ("stale", "stale")
+    assert sorted(e.data["name"] for e in stale) == ["Shop AP", "Shop Switch"]
+
+    fake_net.alive.add("192.0.2.5")
+    await _advance(hass, freezer, 61)
+    assert states() == ("online", "online")
+    assert sorted(e.data["name"] for e in back) == ["Shop AP", "Shop Switch"]
 
 
 async def test_options_hubs_and_devices(hass: HomeAssistant, fake_net) -> None:
