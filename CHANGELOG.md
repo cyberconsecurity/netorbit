@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Assistant tools on Home Assistant 2026.10.** The tools NetOrbit offers to AI assistants (`netorbit_get_map` and the rest) now answer with a `ToolResult`, flagged as an error when a call is refused or fails, carry the integration that provides them, and say what an assistant may assume about each one. Home Assistant 2026.10 logged a deprecation warning on every call before and would have stopped accepting the old answers in 2027.11; older versions get the same plain answers as before.
+
 ## 0.2.10
 
 ### Fixed

@@ -85,22 +85,37 @@ async def _is_admin(hass: HomeAssistant, llm_context: llm.LLMContext) -> bool:
 
 
 class _Tool(llm.Tool):
-    def __init__(self, name: str, description: str, parameters: vol.Schema, fn, write: bool = True) -> None:
+    integration = DOMAIN  # the integration that provides the tool; Home Assistant asks for it from 2027.10
+
+    def __init__(self, name: str, description: str, parameters: vol.Schema, fn, write: bool = True,
+                 destructive: bool = False, idempotent: bool = True, open_world: bool = False) -> None:
         self.name = name
         self.description = description
         self.parameters = parameters
         self._fn = fn
         self.write = write
+        annotations = getattr(llm, "ToolAnnotations", None)
+        if annotations is not None:
+            # What an assistant may assume about the tool (2026.10+). Left unset, Home Assistant assumes the
+            # worst: a tool that writes, destroys and reaches outside the home.
+            self.annotations = annotations(read_only=not write, destructive=destructive, idempotent=idempotent, open_world=open_world)
 
-    async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> JsonObjectType:
+    async def async_call(self, hass: HomeAssistant, tool_input: llm.ToolInput, llm_context: llm.LLMContext) -> llm.ToolResult | JsonObjectType:
         if self.write and not await _is_admin(hass, llm_context):
-            return {"error": NOT_ADMIN}
+            return _result({"error": NOT_ADMIN}, error=True)
         entry, coord = _entry_coord(hass)
         try:
             result = await self._fn(hass, entry, coord, tool_input.tool_args)
         except ManageError as err:
-            return {"error": str(err)}
-        return result
+            return _result({"error": str(err)}, error=True)
+        return _result(result, error=isinstance(result, dict) and "error" in result)
+
+
+def _result(data: JsonObjectType, error: bool = False) -> llm.ToolResult | JsonObjectType:
+    """The tool's answer the way Home Assistant wants it: a ToolResult where there is one (2026.10 and newer; a
+    plain object is deprecated there and stops working in 2027.11), the plain object before that."""
+    tool_result = getattr(llm, "ToolResult", None)
+    return tool_result(data=data, error=error) if tool_result is not None else data
 
 
 def _tools() -> list[llm.Tool]:
@@ -144,6 +159,7 @@ def _tools() -> list[llm.Tool]:
                 vol.Optional("ip"): cv.string, vol.Optional("mac"): cv.string,
             }),
             lambda h, e, c, a: actions.add_hub(h, e, c, a.get("name"), a.get("type", "access_point"), a.get("parent"), a.get("ip"), a.get("mac"), a.get("device")),
+            idempotent=False,
         ),
         _Tool(
             "netorbit_update_hub",
@@ -157,6 +173,7 @@ def _tools() -> list[llm.Tool]:
             "Remove a hub. Its devices move to the hub it connected to.",
             vol.Schema({vol.Required("hub"): cv.string}),
             lambda h, e, c, a: actions.remove_hub(h, e, c, a["hub"]),
+            destructive=True,
         ),
         _Tool(
             "netorbit_confirm_hub",
@@ -182,12 +199,14 @@ def _tools() -> list[llm.Tool]:
             "Stop tracking a device and hide it from the map.",
             vol.Schema({vol.Required("device"): cv.string}),
             lambda h, e, c, a: actions.ignore(h, e, c, device=a["device"]),
+            destructive=True,
         ),
         _Tool(
             "netorbit_scan_now",
             "Sweep the network for new devices and hubs right away.",
             vol.Schema({}),
             lambda h, e, c, a: _scan(c),
+            open_world=True,
         ),
     ]
 
