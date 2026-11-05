@@ -1,19 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### Added
-- **Grandstream GWN access points over SNMP.** NetOrbit reads the Wi-Fi client table (`GRANDSTREAM-GWN-MIB`) from Grandstream access points that you have as hubs, and places those clients under the access point they are connected to. Not yet tested on real Grandstream hardware. Thanks to @fluffymadness for the request and the MIB details (#18).
-- **Rename a device from the card, and tell similar devices apart** (#24). In Edit layout, tap a device and use the new Name field; empty it to go back to the automatic name. The name is saved by MAC address as NetOrbit's name for the device, so it follows the device across IP changes, and the sensor in Home Assistant takes it. A name you set earlier in the sensor's entity settings is updated too, so it does not hide the new one. The device menu now shows IP, MAC, maker and last seen even when `show_ip` is off, and notes that a name may not stick on a private (randomized) MAC. Menus also stay inside the map on small phones. `netorbit.track_device` and the AI assistant's update tool now treat an empty name as "clear my name".
+- **Grandstream GWN access points over SNMP.** NetOrbit reads the Wi-Fi client table (`GRANDSTREAM-GWN-MIB`) from Grandstream access points you have as hubs and places their clients under the access point they're connected to. Not yet tested on real Grandstream hardware, so reports are welcome (thanks @fluffymadness for the request and the MIB details, #18).
+- **Rename a device from the card** (#24). In Edit layout, tap a device and use the Name field; empty it to go back to the automatic name. The name is saved by MAC address, so it follows the device across IP changes, and the device's sensor takes it too. The device menu now shows IP, MAC, maker and last seen even with `show_ip` off, notes when a private (randomized) MAC may not keep a name, and stays inside the map on small phones.
 
 ### Fixed
-- **A device that leaves no longer stays online because DHCP gave its address to another device.** A reply to a ping now only counts for the device whose MAC answered, which NetOrbit reads from ARP after each ping round. Before, every entry with that address turned green, which also hid the offline alert for the device that left. A device or hub is only held to its MAC once ARP has shown that MAC at its address, so a hub given its base MAC, or a device entered by hand behind a MAC-NAT repeater, keeps getting credit. Where ARP can't say who answered (the Home Assistant host itself, devices added by IP with no MAC yet), a reply counts as before.
-- A hub given by MAC now matches exactly before a near MAC is considered, so access points bought together are not confused.
-- **A touch on the map no longer swipes the dashboard to another view** while the map is zoomed in or in Edit layout, on dashboards that swipe between views (the swipe-navigation plugin and the like listen further up the page and read a one-finger pan as a swipe). At the whole map a sideways swipe still changes views as before, and the card's header always does.
+- **A device that leaves no longer stays online when DHCP hands its address to another device** (thanks @ninchistudios, #47). A ping reply now only counts for the device whose MAC answered, read from ARP, so the device that left goes offline and its alert fires. Hubs given a base MAC, devices behind a MAC-rewriting repeater, devices added by IP only and the Home Assistant host count as before.
+- **A hub given by MAC now matches exactly** before a near MAC is considered, so access points bought together aren't confused (thanks @xlntech1, #41).
+- **A mesh node that bridges through an access point** no longer sends that switch port's devices back to the switch once you lock its parent to the access point (thanks @xlntech1, #51).
+- **Touching the map no longer swipes the dashboard to another view** while the map is zoomed in, in Edit layout or mid-pinch, on dashboards that swipe between views. At the whole map a sideways swipe still changes views (thanks @xlntech1, #31).
 - **Assistant tools on Home Assistant 2026.10.** NetOrbit's AI assistant tools now answer in the format Home Assistant 2026.10 expects (thanks @xlntech1, #30). No more deprecation warning on every call, and they keep working after 2027.11, when the old format stops being accepted. Older Home Assistant versions work as before.
-- The assistant tool that undoes hand placement (`netorbit_reset_placement`) is now marked destructive, since the placements it clears can only be set again by hand (#45).
-- A mesh node that bridges through an access point no longer sends that switch port's devices back to the switch once its parent is locked to the access point.
-- Saved videos start right away and end without a long pause.
+- **The assistant tool that undoes hand placement** (`netorbit_reset_placement`) is now marked destructive, since those placements can only be set again by hand (thanks @xlntech1, #52).
+- **Saved videos start right away** and end without the long pause at the start and end (#29).
 
 ## 0.2.10
 
