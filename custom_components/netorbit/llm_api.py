@@ -148,6 +148,7 @@ def _tools() -> list[llm.Tool]:
             "Undo manual placement so NetOrbit places these devices automatically again.",
             vol.Schema({vol.Required("devices"): [cv.string]}),
             lambda h, e, c, a: actions.reset(h, e, c, a["devices"]),
+            destructive=True,
         ),
         _Tool(
             "netorbit_add_hub",

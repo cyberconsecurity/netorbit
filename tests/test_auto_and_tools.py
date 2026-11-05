@@ -373,7 +373,7 @@ async def test_llm_tools(hass: HomeAssistant, fake_net, hass_admin_user, caplog)
             "netorbit_get_map": (True, False, True, False),
             "netorbit_assign_devices": (False, False, True, False),
             "netorbit_import_client_list": (False, False, True, False),
-            "netorbit_reset_placement": (False, False, True, False),
+            "netorbit_reset_placement": (False, True, True, False),
             "netorbit_add_hub": (False, False, False, False),
             "netorbit_update_hub": (False, False, True, False),
             "netorbit_remove_hub": (False, True, True, False),

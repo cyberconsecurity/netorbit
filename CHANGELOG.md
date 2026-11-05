@@ -11,6 +11,7 @@
 - A hub given by MAC now matches exactly before a near MAC is considered, so access points bought together are not confused.
 - **A touch on the map no longer swipes the dashboard to another view** while the map is zoomed in or in Edit layout, on dashboards that swipe between views (the swipe-navigation plugin and the like listen further up the page and read a one-finger pan as a swipe). At the whole map a sideways swipe still changes views as before, and the card's header always does.
 - **Assistant tools on Home Assistant 2026.10.** NetOrbit's AI assistant tools now answer in the format Home Assistant 2026.10 expects (thanks @xlntech1, #30). No more deprecation warning on every call, and they keep working after 2027.11, when the old format stops being accepted. Older Home Assistant versions work as before.
+- The assistant tool that undoes hand placement (`netorbit_reset_placement`) is now marked destructive, since the placements it clears can only be set again by hand (#45).
 - A mesh node that bridges through an access point no longer sends that switch port's devices back to the switch once its parent is locked to the access point.
 - Saved videos start right away and end without a long pause.
 
