@@ -425,8 +425,9 @@ const NO_RADAR_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="1
   `<circle cx="12" cy="12" r="5" fill="none" stroke="${NO_BLUE}" stroke-width="1.4" opacity=".4"/><g class="rb"><circle cx="12" cy="12" r="9.5" fill="none"/><path d="M12 12 L12 2.5 A9.5 9.5 0 0 1 20.2 7.2 Z" fill="${NO_BLUE}" opacity=".55"/>` +
   `<line x1="12" y1="12" x2="12" y2="2.5" stroke="#bfdbfe" stroke-width="1.6"/></g><circle cx="12" cy="12" r="1.8" fill="#bfdbfe"/></svg>`;
 
-// The share video: frames per second, and seconds the first frame is held while the encoder warms up.
-const NO_REC = { fps: 30, hold: 0.5 };
+// The share video: frames per second, seconds the opening frame is held before the animation moves, and seconds the
+// finished map is held at the end.
+const NO_REC = { fps: 30, lead: 0.25, tail: 0.8 };
 // The reveal after the first scan, in seconds: the beam turns once and each node pops in as it passes, links
 // draw in, then labels fade in and the normal header comes back.
 const NO_REVEAL = { start: 0.12, turn: 2.05, labels: 2.6, header: 3.3, end: 4 };
@@ -841,8 +842,7 @@ function netorbitPaintFrame(ctx, scene, t, o) {
 
 /** Steps a recording one frame at a time. Animation time comes from the frame number only (t = frame / fps), never
  *  from the clock, and a late timer still advances exactly one frame, so a stall can freeze the video for a moment
- *  but can never make the animation jump. The first `lead` frames repeat t = 0 (the opening is held while the
- *  encoder warms up). o: { fps, frames, lead, frame(t, i), done(), now(), later(fn, ms), clear(id) }.
+ *  but can never make the animation jump. The first `lead` frames repeat t = 0 (a brief hold on the opening). o: { fps, frames, lead, frame(t, i), done(), now(), later(fn, ms), clear(id) }.
  *  Returns { stop() }. Pure of the DOM; exported for tests. */
 function noFramePump(o) {
   const last = o.frames - 1;
@@ -1444,7 +1444,7 @@ class NetOrbitCard extends HTMLElement {
     const counts = noShareCounts(smodel);
     const total = D.scene.nodes.filter((n) => !n.hub && n.k !== "internet").length;
     const PRE = NO_REVEAL.turn; // one turn of the beam with only the router, as on a first scan
-    const HOLD = 1.4;
+    const HOLD = NO_REC.tail;
     const phases = ["ping", "arp", "names", "snmp", "layout"];
     const frac = (t) => noClamp((t + PRE) / PRE);
     const o = {
@@ -1454,12 +1454,11 @@ class NetOrbitCard extends HTMLElement {
       phase: (t) => NO_SCAN_PHASE[phases[Math.min(phases.length - 1, Math.floor(frac(t) * phases.length))]],
     };
     return new Promise((resolve, reject) => {
-      let stream = null, rec = null, done = false, pump = null, canvas = null, starter = null;
+      let stream = null, rec = null, done = false, pump = null, canvas = null;
       const stopTracks = () => { try { if (stream) stream.getTracks().forEach((tr) => tr.stop()); } catch (e) { /* already stopped */ } };
       const stopRec = () => { try { if (rec && rec.state !== "inactive") rec.stop(); } catch (e) { /* already stopped */ } };
       const cleanup = () => {
         if (pump) pump.stop();
-        if (starter) clearTimeout(starter);
         stopTracks();
         if (canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
       };
@@ -1499,7 +1498,7 @@ class NetOrbitCard extends HTMLElement {
           resolve(new Blob(chunks, { type: type.split(";")[0] }));
         };
         rec.onerror = (e) => { stopRec(); fail(e && e.error); };
-        const lead = Math.round(NO_REC.hold * NO_REC.fps);
+        const lead = Math.round(NO_REC.lead * NO_REC.fps);
         const frames = lead + Math.ceil((PRE + NO_REVEAL.end + HOLD) * NO_REC.fps) + 1;
         let lastTick = 0;
         const frame = (t, i) => {
@@ -1518,19 +1517,16 @@ class NetOrbitCard extends HTMLElement {
             if (onTick && (now - lastTick >= 250 || i === frames - 1)) { lastTick = now; onTick(i / (frames - 1)); }
           } catch (e) { stopRec(); fail(e); }
         };
-        const begin = () => {
-          if (pump || done) return;
-          if (starter) clearTimeout(starter);
-          // Hold the first frame while the encoder warms up, so it does not eat the opening.
-          pump = noFramePump({
-            fps: NO_REC.fps, frames, lead, frame,
-            done: () => setTimeout(() => { try { rec.stop(); } catch (e) { fail(e); } }, 120),
-            now: () => performance.now(), later: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id),
-          });
-        };
-        rec.onstart = begin;
+        // Do not wait for the recorder's "start" event: some browsers (Chromium on desktop) only send it when the
+        // recording stops. Push the opening frame the canvas already shows, then step the animation at once; the
+        // short lead keeps the opening on screen for a moment.
         rec.start(250);
-        starter = setTimeout(begin, 2000); // a browser that never says "start"
+        if (track) track.requestFrame();
+        pump = noFramePump({
+          fps: NO_REC.fps, frames, lead, frame,
+          done: () => { pump = null; setTimeout(() => { try { rec.stop(); } catch (e) { fail(e); } }, 120); },
+          now: () => performance.now(), later: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id),
+        });
       } catch (e) { stopRec(); fail(e); }
     });
   }
@@ -1604,7 +1600,7 @@ class NetOrbitCard extends HTMLElement {
       pop.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("on", x === b));
       q(".btns.img").hidden = b.dataset.m !== "image";
       q(".btns.vid").hidden = b.dataset.m !== "video";
-      status(b.dataset.m === "video" ? "Records the scan animation, about 8 seconds." : "");
+      status(b.dataset.m === "video" ? "Records the scan animation, about 7 seconds." : "");
     }));
     q(".dl").addEventListener("click", () => {
       this._sharePng(hide).then((b) => this._deliver(b, "netorbit-map.png")).then(() => {}, (e) => status(String(e.message || e)));
