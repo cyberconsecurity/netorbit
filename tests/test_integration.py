@@ -158,6 +158,60 @@ async def test_stale_and_recovered(hass: HomeAssistant, fake_net, freezer: Froze
     assert [e.data["name"] for e in back] == [name]
 
 
+async def test_address_handed_to_another_device(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """A device that leaves doesn't stay online because DHCP gave its address to another one."""
+    mac_d = "00:00:5e:00:53:0d"
+    fake_net.alive = {GATEWAY, "192.0.2.11", "192.0.2.12"}
+    fake_net.arp = {"192.0.2.11": MAC_B, "192.0.2.12": mac_d}
+    await _setup(hass, _entry("auto"))
+    gone, moved = "Device 53:0B", "Device 53:0D"
+    assert _node_states(hass)[gone].state == "online"
+
+    # B leaves; D renews onto B's old address before the next sweep
+    fake_net.alive = {GATEWAY, "192.0.2.11"}
+    fake_net.arp = {"192.0.2.11": mac_d}
+    await _advance(hass, freezer, 61)
+    assert _node_states(hass)[gone].state == "recent"
+
+    # the sweep finds D at its new address
+    await _advance(hass, freezer, 300)
+    assert _node_states(hass)[moved].state == "online"
+    assert _node_states(hass)[moved].attributes["ip"] == "192.0.2.11"
+    assert _node_states(hass)[gone].state == "recent"
+
+
+async def test_hub_mac_not_in_arp_still_answers(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """A hub given a MAC that ARP never shows at its address (its base MAC, next to the LAN MAC
+    ARP has) still gets credit for its replies."""
+    fake_net.alive = {GATEWAY, "192.0.2.20"}
+    fake_net.arp = {"192.0.2.20": "00:00:5e:00:53:21"}
+    await _setup(hass, _entry("auto"))
+    await hass.services.async_call(
+        DOMAIN, "add_hub", {"name": "Hallway AP", "type": "access_point", "ip": "192.0.2.20", "mac": "00:00:5e:00:53:20"}, blocking=True
+    )
+    await _advance(hass, freezer, 61)
+    assert _node_states(hass)["Hallway AP"].state == "online"
+    await _advance(hass, freezer, 25*3600)
+    assert _node_states(hass)["Hallway AP"].state == "online"
+
+
+async def test_device_mac_not_in_arp_still_answers(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
+    """A device tracked by a MAC that ARP never shows at its address (entered by hand for a
+    device behind a MAC-NAT repeater, where ARP has the repeater's MAC) still gets credit."""
+    fake_net.alive = {GATEWAY}
+    await _setup(hass, _entry("auto"))
+    await hass.services.async_call(DOMAIN, "track_device", {"mac": MAC_B, "ip": "192.0.2.30", "name": "Garden Cam"}, blocking=True)
+
+    fake_net.alive.add("192.0.2.30")
+    fake_net.arp = {"192.0.2.30": MAC_C}
+    await _advance(hass, freezer, 61)
+    assert _node_states(hass)["Garden Cam"].state == "online"
+    # a sweep finds the repeater's MAC at that address; the camera keeps its credit
+    await _advance(hass, freezer, 301)
+    await _advance(hass, freezer, 25*3600)
+    assert _node_states(hass)["Garden Cam"].state == "online"
+
+
 async def test_addressless_hubs_follow_what_is_behind_them(hass: HomeAssistant, fake_net, freezer: FrozenDateTimeFactory) -> None:
     """Hubs with no address can't be pinged, so they take their status from the devices behind
     them (through other addressless hubs too) instead of turning stale once the window passes."""

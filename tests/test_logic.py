@@ -9,6 +9,7 @@ from custom_components.netorbit.logic import (
     fallback_name,
     guess_icon,
     is_random_mac,
+    keys_answering,
     normalize_mac,
     parse_proc_arp,
     rollup_status,
@@ -99,6 +100,17 @@ def test_parse_arp():
         "192.0.2.12       0x1         0x2         00:00:5E:00:53:0C     *        eth0\n"
     )
     assert parse_proc_arp(text) == {"192.0.2.10": "00:00:5e:00:53:0b", "192.0.2.12": "00:00:5e:00:53:0c"}
+
+
+def test_keys_answering():
+    b, c = "00:00:5e:00:53:0b", "00:00:5e:00:53:0c"
+    macs = {b: b, c: c, "ip:192.0.2.10": None}
+    # the reply came from C, so B (which last had this address) didn't answer
+    assert keys_answering([b, c], macs, c) == [c]
+    assert keys_answering([b], macs, c) == []
+    # no known MAC to compare, or no ARP entry: the reply counts as before
+    assert keys_answering(["ip:192.0.2.10"], macs, c) == ["ip:192.0.2.10"]
+    assert keys_answering([b, c], macs, None) == [b, c]
 
 
 def test_validate_subnet():
