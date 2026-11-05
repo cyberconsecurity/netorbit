@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **Grandstream GWN access points over SNMP.** NetOrbit reads the Wi-Fi client table (`GRANDSTREAM-GWN-MIB`) from Grandstream access points that you have as hubs, and places those clients under the access point they are connected to. Not yet tested on real Grandstream hardware. Thanks to @fluffymadness for the request and the MIB details (#18).
+
 ### Fixed
 - A hub given by MAC now matches exactly before a near MAC is considered, so access points bought together are not confused.
 - **A touch on the map no longer swipes the dashboard to another view** while the map is zoomed in or in Edit layout, on dashboards that swipe between views (the swipe-navigation plugin and the like listen further up the page and read a one-finger pan as a swipe). At the whole map a sideways swipe still changes views as before, and the card's header always does.

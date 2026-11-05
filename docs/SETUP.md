@@ -47,6 +47,10 @@ NetOrbit only ever reads. It never changes a setting on your switch.
 2. Turn on **SNMPv1/v2c** and set the community.
 3. Click **Apply**. The controller pushes it to your Omada switches.
 
+### Grandstream GWN access points
+
+Grandstream GWN access points list their own Wi-Fi clients over SNMP, so NetOrbit places each client under the access point it is connected to, without needing a switch table. In the access point's web page (or GWN Manager), turn on **SNMP v1/v2c** with a read-only community, then make sure the access point is a hub in NetOrbit (it is added automatically when it is recognised, or use **Configure > Add a hub**). NetOrbit reads the client list from the access point's `GRANDSTREAM-GWN-MIB` client table. This was added in 0.3.0 and has not yet been tried on every GWN model.
+
 ### Any other managed switch
 
 Open the switch's web page and look for **SNMP** (often under Management, System or Monitoring). Turn on **SNMP v2c**, and set or keep a **read-only** community. You don't need traps, write access or SNMPv3.

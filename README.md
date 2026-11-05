@@ -32,6 +32,7 @@ Install it, click Submit, and NetOrbit draws the best map your network can tell 
 - **Finds your network gear.** Spots routers, switches, access points and mesh nodes from who made them, what they call themselves, what they announce on the network, and what other integrations already know. Obvious ones are added for you. Likely ones show up with a spinning pink ring and a one-tap "It's a hub / Not a hub".
 - **Works out where each device connects, when your network will say:**
   - **Managed switches with SNMP:** NetOrbit reads their MAC address tables and works out which switch port, and so which access point, every device is behind. No port mapping needed.
+  - **Grandstream GWN access points with SNMP:** NetOrbit reads each access point's own Wi-Fi client list, so every wireless client shows under the access point it is connected to.
   - **UniFi**, and other integrations that report which access point each client uses (Netgear/Orbi's per-device "connected AP" sensors, for example).
 - **Lets you place the rest, three ways:**
   1. **Drag and drop on the card.** Tap *Edit layout*, drag a device onto its hub, or tap it for *Move to*, *Make it a hub* and *Automatic*. To move a hub (a switch from the router to an access point, say), tap the hub in Edit layout and pick *Connected to*.
@@ -203,6 +204,7 @@ SNMP is how managed switches share their MAC address tables. NetOrbit only ever 
 - If your switches still use the factory read-only community, there's nothing to do.
 - If you changed it (good idea), enter it under **Settings > SNMP community**. Letters and numbers only work best; some switches silently ignore communities with symbols.
 - Where to turn SNMP on for UniFi, Omada and other switches, and which switches don't have it: [docs/SETUP.md](docs/SETUP.md#2-turn-on-snmp-on-managed-switches).
+- Grandstream GWN access points: turn SNMP on in the access point and NetOrbit reads its Wi-Fi client list. See [docs/SETUP.md](docs/SETUP.md#grandstream-gwn-access-points).
 - Consumer routers and mesh systems don't support SNMP. That's normal.
 
 <p align="right"><sub><a href="#netorbit">back to the map</a></sub></p>
