@@ -238,8 +238,12 @@ async def update_device(
     opts = _opts(coord)
     cfg = opts[CONF_DEVICES].setdefault(key, {})
     cfg["tracked"] = True
-    if name:
-        cfg["name"] = name
+    if name is not None:
+        # An empty name clears the one you set, so the device goes back to its automatic name.
+        if name.strip():
+            cfg["name"] = name.strip()
+        else:
+            cfg.pop("name", None)
     if icon:
         cfg["icon"] = icon
     if sleepy is not None:
@@ -249,7 +253,7 @@ async def update_device(
     if key in opts[CONF_IGNORED]:
         opts[CONF_IGNORED].remove(key)
     await _save(hass, entry, coord, opts)
-    return {"device": name or _name(coord, key)}
+    return {"device": (name or "").strip() or _name(coord, key)}
 
 
 EXPORT_VERSION = 1
@@ -316,7 +320,13 @@ async def track(hass, entry, coord, mac: str | None = None, ip: str | None = Non
     cfg["tracked"] = True
     if ip:
         cfg["host"] = ip
-    for field in ("name", "icon", "sleepy"):
+    if fields.get("name") is not None:
+        # An empty name clears the one you set, so the device goes back to its automatic name.
+        if fields["name"].strip():
+            cfg["name"] = fields["name"].strip()
+        else:
+            cfg.pop("name", None)
+    for field in ("icon", "sleepy"):
         if fields.get(field) is not None:
             cfg[field] = fields[field]
     if fields.get("hub"):

@@ -39,6 +39,53 @@ async def test_device_keeps_name_and_hub_when_ip_changes(hass: HomeAssistant, fa
     assert next(h for h in entry.options["hubs"] if h["id"] == "hall_ap")["host"] == "192.0.2.66"
 
 
+async def test_name_set_from_the_card_sticks_across_an_ip_change_and_clears(hass: HomeAssistant, fake_net, freezer) -> None:
+    """The card's Name field sets NetOrbit's name by MAC. The sensor follows it, so every later rename shows too, and empty clears."""
+    fake_net.alive = {GATEWAY, "192.0.2.10"}
+    fake_net.arp = {"192.0.2.10": TV}
+    entry = _entry("auto")
+    await _setup(hass, entry)
+    start = next(s for s in _node_states(hass).values() if s.attributes["mac"] == TV.upper())
+    automatic, entity_id = start.attributes["label"], start.entity_id
+
+    await hass.services.async_call(DOMAIN, "track_device", {"mac": TV.upper(), "name": "  Exercise Bike  "}, blocking=True)
+    assert entry.options["devices"][TV]["name"] == "Exercise Bike"
+    bike = _node_states(hass)["Exercise Bike"]
+    # No entity registry name is needed: the sensor itself carries the name.
+    assert bike.entity_id == entity_id and bike.attributes["friendly_name"].endswith("Exercise Bike")
+
+    # DHCP hands the bike a new address.
+    fake_net.alive = {GATEWAY, "192.0.2.88"}
+    fake_net.arp = {"192.0.2.10": TV, "192.0.2.88": TV}
+    await advance(hass, freezer, 301)
+    bike = _node_states(hass)["Exercise Bike"]
+    assert bike.entity_id == entity_id and bike.attributes["ip"] == "192.0.2.88" and bike.attributes["ip_changes"] == 1
+
+    # A later rename by another route (the AI assistant's tool, the update_device action) shows on the sensor at once.
+    from custom_components.netorbit import actions  # noqa: PLC0415
+
+    coord = entry.runtime_data
+    await actions.update_device(hass, entry, coord, TV, name="Spin Bike")
+    spin = _node_states(hass)["Spin Bike"]
+    assert spin.entity_id == entity_id and spin.attributes["friendly_name"].endswith("Spin Bike")
+    assert entry.options["devices"][TV]["name"] == "Spin Bike"
+
+    # An empty name (or only spaces) clears it, and the device goes back to its automatic name.
+    await hass.services.async_call(DOMAIN, "track_device", {"mac": TV.upper(), "name": "   "}, blocking=True)
+    assert "name" not in entry.options["devices"][TV]
+    back = _node_states(hass)[automatic]
+    assert back.entity_id == entity_id and back.attributes["friendly_name"].endswith(automatic)
+    assert "name" not in actions.export_config(coord)["devices"].get(TV, {})
+
+    # update_device clears with an empty name the same way, and leaves the name alone when none is given.
+    await actions.update_device(hass, entry, coord, TV, name="Rower")
+    await actions.update_device(hass, entry, coord, TV, icon="mdi:bike")
+    assert entry.options["devices"][TV]["name"] == "Rower"
+    await actions.update_device(hass, entry, coord, TV, name="")
+    assert "name" not in entry.options["devices"][TV] and entry.options["devices"][TV]["icon"] == "mdi:bike"
+    assert _node_states(hass)[automatic].entity_id == entity_id
+
+
 async def test_device_added_by_ip_switches_to_its_mac(hass: HomeAssistant, fake_net, freezer) -> None:
     fake_net.alive = {GATEWAY}
     fake_net.arp = {}

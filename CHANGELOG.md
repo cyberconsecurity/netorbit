@@ -4,6 +4,7 @@
 
 ### Added
 - **Grandstream GWN access points over SNMP.** NetOrbit reads the Wi-Fi client table (`GRANDSTREAM-GWN-MIB`) from Grandstream access points that you have as hubs, and places those clients under the access point they are connected to. Not yet tested on real Grandstream hardware. Thanks to @fluffymadness for the request and the MIB details (#18).
+- **Rename a device from the card, and tell similar devices apart** (#24). In Edit layout, tap a device and use the new Name field; empty it to go back to the automatic name. The name is saved by MAC address as NetOrbit's name for the device, so it follows the device across IP changes, and the sensor in Home Assistant takes it. A name you set earlier in the sensor's entity settings is updated too, so it does not hide the new one. The device menu now shows IP, MAC, maker and last seen even when `show_ip` is off, and notes that a name may not stick on a private (randomized) MAC. Menus also stay inside the map on small phones. `netorbit.track_device` and the AI assistant's update tool now treat an empty name as "clear my name".
 
 ### Fixed
 - A hub given by MAC now matches exactly before a near MAC is considered, so access points bought together are not confused.

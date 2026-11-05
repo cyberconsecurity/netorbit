@@ -378,6 +378,12 @@ async def test_llm_tools(hass: HomeAssistant, fake_net, hass_admin_user, caplog)
     assert not any(f"provides the LLM tool {t.name} without an integration" in caplog.text for t in api.tools)
     nas = _node_states(hass)["Backup NAS"]
     assert nas.attributes["sleepy"] is True and nas.attributes["link"] == "hub:attic_ap"
+    # An empty name clears the one set, and a call with no name leaves it alone.
+    result = _data(await api.async_call_tool(llm.ToolInput("netorbit_update_device", {"device": "nas", "allowed_to_sleep": False})))
+    assert result["device"] == "Backup NAS" and "Backup NAS" in _node_states(hass)
+    result = _data(await api.async_call_tool(llm.ToolInput("netorbit_update_device", {"device": "nas", "name": "  "})))
+    assert "error" not in result and result["device"] != "Backup NAS" and "Backup NAS" not in _node_states(hass)
+    await api.async_call_tool(llm.ToolInput("netorbit_update_device", {"device": "nas", "name": "Backup NAS"}))
     garage = _node_states(hass)["Attic AP"]
     assert garage.attributes["link"] == "hub:core_switch"
 

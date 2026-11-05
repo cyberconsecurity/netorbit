@@ -982,6 +982,153 @@ const BASE = (process.env.NETORBIT_PREVIEW || "http://localhost:8766").replace(/
     await hp.close();
   }
 
+  // 17. Rename a device from its menu, and tell similar devices apart.
+  {
+    const rp = await browser.newPage({ viewport: { width: 1008, height: 1100 } });
+    rp.on("pageerror", (e) => { console.error("PAGE ERROR", e.message); process.exitCode = 1; });
+    await rp.goto(BASE + "/scripts/preview/index.html?s=novice&live=1");
+    await rp.waitForFunction(() => window.ready);
+    const c8 = rp.locator("netorbit-card");
+    await c8.locator(".editbtn").click();
+    const tvk = await rp.evaluate(() => Object.values(window.NETORBIT_SCENARIOS.novice).find((s) => s.attributes.label === "Bedroom TV").attributes.node_key);
+    const tvEntity = await rp.evaluate((k) => Object.values(window.NETORBIT_SCENARIOS.novice).find((s) => s.attributes.node_key === k).entity_id, tvk);
+    const tvMac = await rp.evaluate((k) => Object.values(window.NETORBIT_SCENARIOS.novice).find((s) => s.attributes.node_key === k).attributes.mac, tvk);
+    const open = async () => c8.locator(`.node[data-key="${tvk}"] circle.disc`).click({ force: true });
+    const calls = () => rp.evaluate(() => window.calls);
+    const ws = () => rp.evaluate(() => window.wsCalls);
+    const shows = (text) => rp.waitForFunction(([k, t]) => document.querySelector("netorbit-card").shadowRoot.querySelector(`.node[data-key="${k}"]`).textContent.includes(t), [tvk, text]);
+
+    // The menu shows IP, MAC, maker and last seen even though show_ip is off.
+    await open();
+    assert.strictEqual(await c8.locator(".pop input.name").inputValue(), "Bedroom TV", "the Name field starts with the current name");
+    const facts = await c8.locator(".pop .facts").innerText();
+    assert.ok(/IP\s*192\.0\.2\./.test(facts), "IP shown in the menu with show_ip off: " + facts);
+    assert.ok(facts.includes(tvMac), "MAC shown in the menu");
+    assert.ok(/Last seen/.test(facts), "last seen shown");
+    assert.strictEqual(await c8.locator(".pop .note").count(), 0, "no private MAC note for a normal MAC");
+
+    // Saving sends NetOrbit's name (by MAC). The card does not write a Home Assistant entity name.
+    await c8.locator(".pop input.name").fill("  Bike  ");
+    await c8.locator(".pop .rename").click();
+    assert.deepStrictEqual((await calls()).at(-1), ["netorbit", "track_device", { name: "Bike", mac: tvMac, config_entry_id: "preview" }]);
+    await shows("Bike");
+    assert.strictEqual((await ws()).length, 0, "no entity registry write when no entity name was set in Home Assistant");
+    console.log("rename ok");
+
+    // Enter saves too. An unchanged name sends nothing.
+    await open();
+    assert.strictEqual(await c8.locator(".pop input.name").inputValue(), "Bike");
+    const before = (await calls()).length;
+    await c8.locator(".pop .rename").click();
+    assert.strictEqual((await calls()).length, before, "an unchanged name sends nothing");
+    await open();
+    await c8.locator(".pop input.name").fill("Tread");
+    await c8.locator(".pop input.name").press("Enter");
+    assert.strictEqual((await calls()).at(-1)[2].name, "Tread", "Enter saves the name");
+    await shows("Tread");
+
+    // A name changed elsewhere (settings, a service, an AI assistant) shows on the map, since the card set no entity name.
+    await rp.evaluate((k) => { const st = Object.values(window.card._hass.states).find((x) => x.attributes.node_key === k); st.attributes.label = "From Assistant"; window.pushHass(); }, tvk);
+    await shows("From Assistant");
+
+    // An empty name goes back to the automatic name.
+    await open();
+    await c8.locator(".pop input.name").fill("   ");
+    await c8.locator(".pop .rename").click();
+    assert.deepStrictEqual((await calls()).at(-1), ["netorbit", "track_device", { name: "", mac: tvMac, config_entry_id: "preview" }]);
+    await shows("Bedroom TV");
+    assert.strictEqual((await ws()).length, 0, "clearing writes no entity name either");
+    console.log("clear ok");
+
+    // HTML in a name is text, in the menu and on the map.
+    const evil = '<img src=x onerror="window.pwned=1"><b>"\'';
+    await open();
+    await c8.locator(".pop input.name").fill(evil);
+    await c8.locator(".pop .rename").click();
+    await shows("<img");
+    await open();
+    assert.strictEqual(await c8.locator(".pop input.name").inputValue(), evil.slice(0, 64), "the name survives the menu unchanged");
+    assert.strictEqual(await c8.locator(".pop img").count(), 0, "no HTML from the name in the menu");
+    assert.ok(!(await rp.evaluate(() => window.pwned)), "no script from the name ran");
+    await c8.locator(".pop .x").click();
+
+    // A very long name is cut at 64 characters, and the menu stays on the map.
+    await open();
+    await c8.locator(".pop input.name").evaluate((el) => { el.maxLength = 1000; el.value = "W".repeat(300); });
+    await c8.locator(".pop .rename").click();
+    assert.strictEqual((await calls()).at(-1)[2].name.length, 64, "a long name is cut to 64");
+
+    // Saving a menu whose automatic name is longer than the field allows renames nothing.
+    await rp.evaluate((k) => { Object.keys(window.card._hass.entities).forEach((e) => delete window.card._hass.entities[e]); const st = Object.values(window.card._hass.states).find((x) => x.attributes.node_key === k); st.attributes.label = "n".repeat(100); window.pushHass(); }, tvk);
+    await open();
+    const callsBefore = (await calls()).length;
+    await c8.locator(".pop .rename").click();
+    assert.strictEqual((await calls()).length, callsBefore, "an untouched long automatic name is not renamed");
+    await open();
+    await c8.locator(".pop input.name").press("Enter");
+    assert.strictEqual((await calls()).length, callsBefore, "Enter on an untouched long name renames nothing");
+
+    // Someone set an entity name in Home Assistant's settings: it wins on the map, so a rename from the card changes it too.
+    await rp.evaluate(([k, e]) => { const st = Object.values(window.card._hass.states).find((x) => x.attributes.node_key === k); st.attributes.label = "Bedroom TV"; window.card._hass.entities[e] = { name: "Den TV" }; window.pushHass(); }, [tvk, tvEntity]);
+    await shows("Den TV");
+    await open();
+    assert.strictEqual(await c8.locator(".pop input.name").inputValue(), "Den TV");
+    await c8.locator(".pop input.name").fill("Study TV");
+    await c8.locator(".pop .rename").click();
+    await rp.waitForFunction(() => window.wsCalls.length === 1);
+    assert.deepStrictEqual((await ws()).at(-1), { type: "config/entity_registry/update", entity_id: tvEntity, name: "Study TV" });
+    assert.strictEqual((await calls()).at(-1)[2].name, "Study TV", "NetOrbit's own name is saved as well");
+    await shows("Study TV");
+    await open();
+    await c8.locator(".pop input.name").fill("");
+    await c8.locator(".pop .rename").click();
+    await rp.waitForFunction(() => window.wsCalls.length === 2);
+    assert.strictEqual((await ws()).at(-1).name, null, "clearing also clears the name set in Home Assistant");
+    await shows("Bedroom TV");
+
+    // A private (random) MAC gets a one-line note.
+    await rp.evaluate((k) => { const st = Object.values(window.card._hass.states).find((x) => x.attributes.node_key === k); st.attributes.mac = "02:00:5E:00:53:99"; /* example-ok: a private MAC */ window.pushHass(); }, tvk);
+    await open();
+    assert.ok((await c8.locator(".pop .note").innerText()).includes("private MAC"), "private MAC note shown");
+    await c8.locator(".pop .x").click();
+
+    // A failed save tells you, and a name Home Assistant refused is reported too.
+    const notes = [];
+    await rp.evaluate(() => { window.notes = []; window.card.addEventListener("hass-notification", (e) => window.notes.push(e.detail.message)); });
+    await rp.evaluate(([k, e]) => { window.card._hass.entities[e] = { name: "Den TV" }; window.pushHass(); window.wsFail = "not allowed"; }, [tvk, tvEntity]);
+    await open();
+    await c8.locator(".pop input.name").fill("Cam");
+    await c8.locator(".pop .rename").click();
+    await rp.waitForFunction(() => window.notes.length === 1);
+    assert.ok((await rp.evaluate(() => window.notes[0])).includes("not allowed"), "a failed entity rename is reported");
+    await rp.evaluate(() => { window.wsFail = null; window.callFail = "boom"; });
+    const wsBefore = (await ws()).length;
+    await open();
+    await c8.locator(".pop input.name").fill("Cam 2");
+    await c8.locator(".pop .rename").click();
+    await rp.waitForFunction(() => window.notes.length === 2);
+    assert.strictEqual((await ws()).length, wsBefore, "no entity rename when NetOrbit's own save failed");
+    console.log("rename errors ok");
+
+    // On a phone the menu, with its Name field, fits on the map.
+    const rph = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await rph.goto(BASE + "/scripts/preview/index.html?s=novice");
+    await rph.waitForFunction(() => window.ready);
+    const c9 = rph.locator("netorbit-card");
+    await c9.locator(".editbtn").click();
+    await c9.locator(`.node[data-key="${tvk}"] circle.disc`).tap();
+    const fits = await rph.evaluate(() => {
+      const root = document.querySelector("netorbit-card").shadowRoot;
+      const p = root.querySelector(".pop").getBoundingClientRect(), w = root.querySelector(".wrap").getBoundingClientRect();
+      return { top: p.top - w.top, bottom: w.bottom - p.bottom, left: p.left - w.left, right: w.right - p.right };
+    });
+    assert.ok(fits.top >= 0 && fits.left >= 0 && fits.right >= 0, "the menu is inside the map on a phone: " + JSON.stringify(fits));
+    assert.ok(await c9.locator(".pop input.name").isVisible() && await c9.locator(".pop .rename").isVisible(), "Name field and Save name show on a phone");
+    console.log("phone menu ok");
+    await rph.close();
+    await rp.close();
+  }
+
   await browser.close();
   console.log("ALL INTERACTIONS PASSED");
 })().catch((e) => { console.error(e); process.exit(1); });

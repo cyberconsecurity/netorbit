@@ -35,6 +35,8 @@ const NO_HUB_TYPE = {
   other: "Hub",
 };
 
+const NO_NAME_MAX = 64;
+
 function noEsc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -48,6 +50,12 @@ function noRel(iso) {
   if (s < 3600) return Math.round(s / 60) + " min ago";
   if (s < 86400) return Math.round(s / 3600) + " h ago";
   return Math.round(s / 86400) + " d ago";
+}
+
+/** True for a locally administered ("private" or random) MAC address: phones and laptops use these, and may change them. */
+function noPrivateMac(mac) {
+  const hex = String(mac || "").replace(/[^0-9a-f]/gi, "");
+  return hex.length === 12 && "26ae".indexOf(hex.charAt(1).toLowerCase()) >= 0;
 }
 
 function noTrunc(s, n) {
@@ -987,7 +995,7 @@ class NetOrbitCard extends HTMLElement {
       const icon = reg.icon || a.icon || "mdi:lan-connect";
       const n = {
         // A name set in Home Assistant's entity settings wins over NetOrbit's own name.
-        key: a.node_key, entity: s.entity_id, label: reg.name || a.label || a.friendly_name, ip: a.ip, mac: a.mac, ip_changes: a.ip_changes || 0,
+        key: a.node_key, entity: s.entity_id, label: reg.name || a.label || a.friendly_name, reg_name: reg.name || "", ip: a.ip, mac: a.mac, ip_changes: a.ip_changes || 0,
         kind: a.kind, link: a.link, parent: a.link, sleepy: a.sleepy === true, last_seen: a.last_seen,
         hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, icon,
         status: NO_STATUS[s.state] ? s.state : "unknown",
@@ -999,7 +1007,7 @@ class NetOrbitCard extends HTMLElement {
         if (n.link === opt.link || Date.now() - opt.t > 10000) this._optimistic.delete(n.key);
         else { n.link = n.parent = opt.link; n.placement = "manual"; n.pending = true; }
       }
-      sig.push([n.key, n.status, n.link, n.label, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0].join("~"));
+      sig.push([n.key, n.status, n.link, n.label, n.mac, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0].join("~"));
       if (a.kind === "hub") {
         hubs[n.key] = n;
         if (!n.link && !root) root = n.key;
@@ -1171,7 +1179,12 @@ class NetOrbitCard extends HTMLElement {
   .tip .k { color:#94a3b8; display:inline-block; width:74px; }
   .pop { position:absolute; background:rgba(15,23,42,.98); border:1px solid rgba(96,165,250,.45); border-radius:12px; padding:12px; font-size:13px; color:#e2e8f0; z-index:3; width:250px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
   .pop b { display:block; font-size:14px; }
+  .pop b { overflow-wrap:anywhere; }
   .pop .muted { color:#94a3b8; font-size:12px; margin-top:2px; }
+  .pop .facts { margin-top:6px; color:#94a3b8; font-size:11.5px; line-height:1.5; }
+  .pop .facts span { display:inline-block; width:62px; opacity:.8; }
+  .pop .facts div { overflow-wrap:anywhere; }
+  .pop .note { margin-top:6px; color:#fcd34d; font-size:11.5px; line-height:1.4; }
   .pop .row { display:flex; gap:8px; margin-top:10px; }
   .pop label { display:block; color:#94a3b8; font-size:12px; margin-top:10px; }
   .pop select, .pop input { width:100%; box-sizing:border-box; margin-top:4px; font:inherit; padding:6px 8px; border-radius:8px; border:1px solid rgba(148,163,184,.3); background:#0b1220; color:#e2e8f0; }
@@ -1977,9 +1990,13 @@ class NetOrbitCard extends HTMLElement {
     this._sig = "";
     return this._hass.callService("netorbit", service, data).then(() => true, (e) => {
       console.error("NetOrbit:", e);
-      this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message: `NetOrbit: ${e.message || e}` }, bubbles: true, composed: true }));
+      this._notify(`NetOrbit: ${(e && e.message) || e}`);
       return false;
     });
+  }
+
+  _notify(message) {
+    this.dispatchEvent(new CustomEvent("hass-notification", { detail: { message }, bubbles: true, composed: true }));
   }
 
   _openPop(html, ev, wrap, place, w = 250, h = 200) {
@@ -1989,9 +2006,24 @@ class NetOrbitCard extends HTMLElement {
     pop.innerHTML = html;
     wrap.appendChild(pop);
     place(pop, ev, w, h);
+    this._fitPop(pop, wrap);
     this._popOpen = true;
     pop.querySelectorAll(".x").forEach((b) => b.addEventListener("click", () => this._closePop(wrap)));
     return pop;
+  }
+
+  // Keep a menu inside the map: on a small phone it is narrower than the menu, and a tall menu (the device menu
+  // has a Name field) is taller than the map, so it scrolls instead of hanging off the card.
+  _fitPop(pop, wrap) {
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    if (!W || !H) return;
+    const padX = pop.offsetWidth - pop.clientWidth + 24, padY = 24 + (pop.offsetHeight - pop.clientHeight);
+    if (pop.offsetWidth > W - 8) pop.style.width = Math.max(120, W - 8 - padX) + "px";
+    if (pop.offsetHeight > H - 8) { pop.style.maxHeight = Math.max(120, H - 8 - padY) + "px"; pop.style.overflowY = "auto"; }
+    const left = Math.min(pop.offsetLeft, W - pop.offsetWidth - 4);
+    const top = Math.min(pop.offsetTop, H - pop.offsetHeight - 4);
+    pop.style.left = Math.max(4, left) + "px";
+    pop.style.top = Math.max(4, top) + "px";
   }
 
   _closePop(wrap) {
@@ -2010,15 +2042,30 @@ class NetOrbitCard extends HTMLElement {
 
   _devicePopup(n, ev, wrap, place, hubs) {
     const types = Object.entries(NO_HUB_TYPE).filter(([k]) => k !== "router").map(([k, v]) => `<option value="${k}" ${k === "access_point" ? "selected" : ""}>${v}</option>`).join("");
+    // What tells two similar devices apart, shown whether or not the map shows addresses.
+    const fact = (k, v) => (v ? `<div><span>${k}</span>${noEsc(v)}</div>` : "");
+    const facts = fact("IP", n.ip) + fact("MAC", n.mac) + fact("Maker", n.vendor) + fact("Last seen", n.status === "online" ? "now" : noRel(n.last_seen));
     const pop = this._openPop(
       `<b>${noEsc(n.label)}</b><div class="muted">${noEsc(NO_PLACEMENT[n.placement] || "")}</div>` +
+      `<div class="facts">${facts}</div>` +
+      `<label>Name<input class="name" maxlength="${NO_NAME_MAX}" placeholder="Automatic name" value="${noEsc(n.label)}"></label>` +
+      (noPrivateMac(n.mac) ? `<div class="note">This device uses a private MAC address. If it changes the address, the name may not stick.</div>` : "") +
+      `<div class="row"><button class="go rename">Save name</button></div>` +
       `<label>Connects through<select class="hub">${this._hubOptions(hubs, n.link)}</select></label>` +
       `<div class="row"><button class="go move">Move</button>${n.placement === "manual" ? `<button class="reset">Automatic</button>` : ""}</div>` +
       `<label>Or this device is itself a<select class="type">${types}</select></label>` +
       `<div class="row"><button class="mk">Make it a hub</button><button class="x">Close</button></div>`,
-      ev, wrap, place, 250, 260
+      ev, wrap, place, 250, 430
     );
     const q = (s) => pop.querySelector(s);
+    const rename = () => {
+      const name = q(".name").value.trim().slice(0, NO_NAME_MAX);
+      this._closePop(wrap);
+      // Compare with the current name as the field shows it (trimmed and cut), so saving an untouched long name renames nothing.
+      if (name !== String(n.label || "").trim().slice(0, NO_NAME_MAX)) this._rename(n, name);
+    };
+    q(".rename").addEventListener("click", rename);
+    q(".name").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); rename(); } });
     q(".move").addEventListener("click", () => {
       const hub = q(".hub").value;
       if (!hub) { q(".hub").focus(); return; }
@@ -2027,6 +2074,25 @@ class NetOrbitCard extends HTMLElement {
     });
     if (q(".reset")) q(".reset").addEventListener("click", () => { this._closePop(wrap); this._call("reset_placement", { device: [this._ref(n)] }); });
     q(".mk").addEventListener("click", () => { const t = q(".type").value; this._closePop(wrap); this._call("confirm_hub", { device: this._ref(n), type: t }); });
+  }
+
+  // Name a device. The name is NetOrbit's own, keyed by MAC address: it follows the device across IP changes, it is
+  // what backups, services and AI assistants see, and the sensor's Home Assistant name follows it by itself. The card
+  // never creates a Home Assistant entity name. Only when someone already set one in the entity settings (it wins
+  // over NetOrbit's name on the map) is it updated too, so the new name shows. An empty name clears both.
+  _rename(n, name) {
+    const data = { name };
+    if (n.mac) data.mac = n.mac;
+    else if (n.ip) data.ip = n.ip;
+    else { this._notify("This device has no MAC or IP address to name it by."); return Promise.resolve(false); }
+    return this._call("track_device", data).then((ok) => {
+      if (!ok || !n.entity || !n.reg_name) return ok;
+      return this._hass.callWS({ type: "config/entity_registry/update", entity_id: n.entity, name: name || null }).then(() => true, (e) => {
+        console.error("NetOrbit:", e);
+        this._notify(`NetOrbit saved the name, but the name set in Home Assistant's entity settings was not changed: ${(e && e.message) || e}`);
+        return false;
+      });
+    });
   }
 
   // Hubs a hub can hang off: the router and every other real hub, except itself and the hubs below it.
@@ -2160,5 +2226,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/the-scott-davis/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { netorbitLayout, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump };
+if (typeof module !== "undefined") module.exports = { netorbitLayout, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

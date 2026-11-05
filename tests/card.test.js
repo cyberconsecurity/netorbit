@@ -6,7 +6,7 @@ globalThis.HTMLElement = class {};
 globalThis.customElements = { get: () => undefined, define: () => {} };
 globalThis.window = globalThis;
 console.info = () => {};
-const { netorbitLayout } = require("../custom_components/netorbit/frontend/netorbit-card.js");
+const { netorbitLayout, noPrivateMac } = require("../custom_components/netorbit/frontend/netorbit-card.js");
 
 function model(hubDefs, devCounts) {
   const hubs = {};
@@ -314,6 +314,12 @@ test("with names shown, ordinary names stay", () => {
   // A name needs more than a short number or a version to be treated as an address.
   const fine = ["Living Room TV", "Office Switch", "Cafe", "Deadbeef Lamp", "Facade Light", "Decade", "Echo Dot 3", "Pixel 7 Pro", "Room 12", "Hallway 2nd Floor", "TV: Den", "Attic AP2"];
   for (const n of fine) assert.strictEqual(sharedLabel(n), n, n + " should stay");
+});
+
+test("a private (locally administered) MAC is spotted, a normal one is not", () => {
+  // example-ok: synthetic values, the second hex digit is what makes a MAC private
+  for (const m of ["02:00:5E:00:53:01", "06-00-5e-00-53-01", "0a0000000001", "FE:00:5E:00:53:01", "AE:00:5E:00:53:01"]) assert.ok(noPrivateMac(m), m); // example-ok
+  for (const m of ["00:00:5E:00:53:01", "", null, undefined, "02:00"]) assert.ok(!noPrivateMac(m), String(m));
 });
 
 // The share video's frame pump: animation time comes from the frame number, so a late timer never makes it jump.

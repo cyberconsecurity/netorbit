@@ -25,6 +25,7 @@
   card.setConfig(Object.assign({ title: "Home Network" }, extra ? JSON.parse(extra) : {}));
   document.getElementById("c").appendChild(card);
   window.calls = [];
+  window.wsCalls = [];
   // ?live=1 applies each action to the fake data, so the map changes the way it would in Home Assistant.
   const live = new URLSearchParams(location.search).get("live") === "1";
   const states = window.NETORBIT_SCENARIOS[s];
@@ -51,6 +52,13 @@
       sum.suggested_hubs = (sum.suggested_hubs || []).filter((x) => x !== sug);
     } else if (svc === "dismiss_hub") {
       sum.suggested_hubs = (sum.suggested_hubs || []).filter((x) => x.key !== data.device);
+    } else if (svc === "track_device") {
+      // NetOrbit's own name; an empty one goes back to the automatic name.
+      const st = findDev(data.mac || data.ip);
+      if (st) {
+        if (!st.attributes._auto) st.attributes._auto = st.attributes.label;
+        st.attributes.label = String(data.name || "").trim() || st.attributes._auto;
+      }
     } else if (svc === "update_hub") {
       const st = Object.values(states).find((x) => x.attributes.node_key === "hub:" + data.hub);
       if (st && data.name) st.attributes.label = data.name;
@@ -60,6 +68,16 @@
     callService: async (d, svc, data) => {
       window.calls.push([d, svc, data]);
       if (live) { apply(svc, data); setTimeout(() => { card.hass = Object.assign({}, hass, { states: Object.assign({}, states) }); }, 250); }
+      if (window.callFail) throw new Error(window.callFail);
+    },
+    // Home Assistant's WebSocket API: a name someone set in the entity settings is changed through config/entity_registry/update.
+    callWS: async (msg) => {
+      window.wsCalls.push(msg);
+      if (window.wsFail) throw new Error(window.wsFail);
+      if (msg.type === "config/entity_registry/update") hass.entities[msg.entity_id] = Object.assign({}, hass.entities[msg.entity_id], { name: msg.name });
+      // Home Assistant sends the card a new hass when the registry changes.
+      setTimeout(() => window.pushHass(), 0);
+      return {};
     } };
   card.hass = hass;
   // Handles for the browser tests: a fresh hass object with the (possibly edited) fake states, as Home Assistant sends.
