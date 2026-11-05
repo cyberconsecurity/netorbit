@@ -81,6 +81,47 @@ def test_two_aps_on_one_port_falls_back_to_the_switch():
     assert topo.device_hub == {"tv": "sw1"}
 
 
+def _mesh():
+    """AP1 wired to SW1 port 5; AP2 is a mesh node whose uplink is AP1, so the switch sees
+    AP2 and every client of either on port 5 as well."""
+    sw1 = {GW: 1, AP1: 5, AP2: 5, TV: 5, CAM: 5}
+    hubs = {"gateway": GW, "sw1": SW1, "ap1": AP1, "ap2": AP2}
+    return {"sw1": sw1}, hubs, {"tv": TV, "cam": CAM}
+
+
+def test_mesh_node_locked_behind_an_ap_leaves_the_ports_devices_on_the_ap():
+    tables, hubs, devices = _mesh()
+    topo = infer(tables, hubs, GW, devices, "gateway", hub_parents={"ap2": "ap1"})
+    assert topo.device_hub == {"tv": "ap1", "cam": "ap1"}
+    assert topo.hub_parent == {"ap1": "sw1", "ap2": "ap1", "sw1": "gateway"}
+
+
+def test_mesh_node_without_a_lock_still_falls_back_to_the_switch():
+    tables, hubs, devices = _mesh()
+    topo = infer(tables, hubs, GW, devices, "gateway")
+    assert topo.device_hub == {"tv": "sw1", "cam": "sw1"}
+    assert topo.hub_parent == {"ap1": "sw1", "ap2": "sw1", "sw1": "gateway"}
+    # Locks that point elsewhere (both to the switch) say nothing about the port and change nothing.
+    topo = infer(tables, hubs, GW, devices, "gateway", hub_parents={"ap1": "sw1", "ap2": "sw1"})
+    assert topo.device_hub == {"tv": "sw1", "cam": "sw1"}
+    assert topo.hub_parent == {"ap1": "sw1", "ap2": "sw1", "sw1": "gateway"}
+
+
+def test_mesh_chain_of_three_on_one_port():
+    tables, hubs, devices = _mesh()
+    tables["sw1"][AP3] = 5
+    hubs["ap3"] = AP3
+    locks = {"ap2": "ap1", "ap3": "ap2"}
+    topo = infer(tables, hubs, GW, devices, "gateway", hub_parents=locks)
+    assert topo.device_hub == {"tv": "ap1", "cam": "ap1"}
+    assert topo.hub_parent == {"ap1": "sw1", "ap2": "ap1", "ap3": "ap2", "sw1": "gateway"}
+    # The middle node's MAC missing from the table still leaves AP3 behind AP1 through the chain.
+    del tables["sw1"][AP2]
+    topo = infer(tables, hubs, GW, devices, "gateway", hub_parents=locks)
+    assert topo.device_hub == {"tv": "ap1", "cam": "ap1"}
+    assert topo.hub_parent == {"ap1": "sw1", "ap3": "sw1", "sw1": "gateway"}
+
+
 def test_router_with_its_own_table():
     gw = {SW1: 2, AP1: 3, TV: 3}
     topo = infer({"gateway": gw}, {"gateway": GW, "ap1": AP1}, GW, {"tv": TV}, "gateway")

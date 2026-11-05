@@ -50,6 +50,7 @@ def infer(
     device_macs: dict[str, str],
     root: str,
     leaf_hubs: set[str] | None = None,
+    hub_parents: dict[str, str] | None = None,
 ) -> Topology:
     """Infer hub parents and device placement.
 
@@ -60,11 +61,15 @@ def infer(
     root: the router's hub key
     leaf_hubs: hubs that devices can sit behind (access points, mesh nodes). Defaults
                to every hub without a table of its own.
+    hub_parents: parents a person has locked, hub key -> parent hub key. When several
+                 leaf hubs share one switch port (a mesh node bridging through an
+                 access point), the port's devices go to the hub the others hang from.
     """
     result = Topology()
     if not tables:
         return result
     leaf_hubs = set(hub_macs) - set(tables) if leaf_hubs is None else leaf_hubs
+    hub_parents = hub_parents or {}
 
     uplink: dict[str, int | None] = {}
     for sw, table in tables.items():
@@ -112,6 +117,33 @@ def infer(
             by_port.setdefault(loc, []).append(hub)
 
     top = {sw for sw in tables if result.hub_parent.get(sw) == root}
+
+    def behind_another(hub: str, here: set[str]) -> bool:
+        """True when the chain of locked parents from hub reaches another hub on the same port."""
+        seen = {hub}
+        parent = hub_parents.get(hub)
+        while parent and parent not in seen:
+            if parent in here:
+                return True
+            seen.add(parent)
+            parent = hub_parents.get(parent)
+        return False
+
+    # Several leaf hubs on one port usually means one bridges through another: a mesh
+    # node whose uplink is an access point shows up on the access point's port, along
+    # with every client of both. The table cannot tell them apart, but a locked parent
+    # says which hangs from which: keep only the hubs the others hang from, and record
+    # that parent so the inference agrees with the drawing.
+    for loc, hubs in list(by_port.items()):
+        if len(hubs) < 2:
+            continue
+        here = set(hubs)
+        for hub in hubs:
+            parent = hub_parents.get(hub)
+            if parent and parent != hub and parent in here:
+                result.hub_parent[hub] = parent
+        by_port[loc] = [hub for hub in hubs if not behind_another(hub, here)]
+
     known_hub_macs = {m for m in hub_macs.values() if m}
     for key, mac in device_macs.items():
         if not mac or mac in known_hub_macs:

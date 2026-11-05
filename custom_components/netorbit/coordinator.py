@@ -840,7 +840,9 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         gateway_mac = hub_macs.get(ROOT_HUB_ID)
         device_macs = {k: r["mac"] for k, r in self._seen.items() if r.get("mac") and not k.startswith("hub:")}
         leaf = {h["id"] for h in self.opts[CONF_HUBS] if h.get("type") in (HUB_AP, HUB_MESH, HUB_OTHER) and h["id"] not in self._tables}
-        self._topology = infer(self._tables, hub_macs, gateway_mac, device_macs, ROOT_HUB_ID, leaf_hubs=leaf)
+        # Parents a person has locked tell infer() which of several hubs sharing a switch port is the uplink.
+        locked = {h["id"]: h["parent"] for h in self.opts[CONF_HUBS] if h.get("parent_locked") and h.get("parent") and h["parent"] != h["id"]}
+        self._topology = infer(self._tables, hub_macs, gateway_mac, device_macs, ROOT_HUB_ID, leaf_hubs=leaf, hub_parents=locked)
         stamp = now.isoformat()
         for key, hub_id in self._topology.device_hub.items():
             self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_SNMP, "at": stamp}

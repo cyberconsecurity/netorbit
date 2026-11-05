@@ -19,6 +19,7 @@ SW_MAC = "00:00:5e:00:53:02"
 AP_MAC = "00:00:5f:00:53:04"  # example-ok: synthetic test value
 TV_MAC = "00:00:5e:00:53:10"
 NAS_MAC = "00:00:5e:00:53:12"
+MESH_MAC = "00:00:5e:00:53:30"
 MAYBE_MAC = "00:00:5f:00:53:20"  # example-ok: synthetic test value
 # What Home Assistant 2026.10 logs when a tool answers with a plain object instead of a ToolResult.
 DEPRECATED_ANSWER = "returns a JSON object from a tool, which is deprecated; return a ToolResult instead"
@@ -231,6 +232,35 @@ async def test_moving_a_device_does_not_wait_for_pings(hass: HomeAssistant, fake
     gate.set()
     await hass.async_block_till_done(wait_background_tasks=True)
     assert _node_states(hass)["living-room-tv"].attributes["link"] == "hub:gateway"
+
+
+async def test_mesh_node_locked_behind_an_ap_keeps_the_aps_clients(hass: HomeAssistant, fake_net) -> None:
+    """A mesh node bridging through an access point shares the AP's switch port; the locked parent says which is the uplink."""
+    hubs = [
+        {"id": "core_switch", "name": "core-switch", "host": "192.0.2.2", "mac": SW_MAC, "type": "switch", "parent": "gateway"},
+        {"id": "hall_ap", "name": "Hall AP", "host": "192.0.2.6", "mac": AP_MAC, "type": "access_point", "parent": "core_switch"},
+        {"id": "shed_mesh", "name": "Shed mesh", "host": "192.0.2.7", "mac": MESH_MAC, "type": "mesh_node", "parent": "hall_ap", "parent_locked": True},
+    ]
+    fake_net.alive = {GATEWAY, "192.0.2.2", "192.0.2.6", "192.0.2.7", "192.0.2.10", "192.0.2.12"}
+    fake_net.arp = {
+        GATEWAY: GW_MAC, "192.0.2.2": SW_MAC, "192.0.2.6": AP_MAC, "192.0.2.7": MESH_MAC,
+        "192.0.2.10": TV_MAC, "192.0.2.12": NAS_MAC,
+    }
+    fake_net.dns = {"192.0.2.10": "living-room-tv.lan", "192.0.2.12": "nas.lan"}
+    fake_net.snmp = {"192.0.2.2": ("public", ProbeResult(descr="8-port PoE managed switch", name="core-switch", bridge=True))}
+    # The switch sees the AP, the mesh node and the TV all on port 6.
+    fake_net.tables = {"192.0.2.2": {GW_MAC: 1, AP_MAC: 6, MESH_MAC: 6, TV_MAC: 6, NAS_MAC: 3}}
+    entry = _entry("auto", hubs=hubs)
+    await _setup(hass, entry)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    nodes = _node_states(hass)
+    assert nodes["Hall AP"].attributes["link"] == "hub:core_switch"
+    assert nodes["Shed mesh"].attributes["link"] == "hub:hall_ap"
+    assert nodes["living-room-tv"].attributes["link"] == "hub:hall_ap"
+    assert nodes["living-room-tv"].attributes["placement"] == "snmp"
+    assert nodes["nas"].attributes["link"] == "hub:core_switch"
 
 
 async def test_import_client_list(hass: HomeAssistant, fake_net) -> None:
