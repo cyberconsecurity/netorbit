@@ -11,9 +11,9 @@
 - A license GitHub can identify (MIT).
 - Brand icon at `custom_components/netorbit/brand/icon.png` (Home Assistant 2026.3 and newer show it; older versions show a generic icon).
 
-## Getting into the default list
+## Default list
 
-Anyone can add NetOrbit as a custom repository today. To show up when people search the Marketplace without adding it, it has to be in the default list: open a pull request to https://github.com/hacs/default adding `the-scott-davis/netorbit` to the `integration` file, in alphabetical order, from a personal account (the PR must be editable). Its checks repeat the list above plus "at least one release" and "the domain isn't used by a core integration".
+NetOrbit has been in the default list since November 2, 2026 (hacs/default#12978), so people find it by searching the Marketplace or HACS. New releases need no extra step there.
 
 ## Manual checks before promoting to Latest
 

@@ -1,6 +1,8 @@
 # NetOrbit
 
-[![Marketplace](https://img.shields.io/badge/Home%20Assistant-Marketplace-41BDF5.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=the-scott-davis&repository=netorbit&category=integration) [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=the-scott-davis&repository=netorbit&category=integration) ![Version](https://img.shields.io/github/v/release/the-scott-davis/netorbit) ![License](https://img.shields.io/github/license/the-scott-davis/netorbit)
+[![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=the-scott-davis&repository=netorbit&category=integration)
+
+![Version](https://img.shields.io/github/v/release/the-scott-davis/netorbit) ![License](https://img.shields.io/github/license/the-scott-davis/netorbit)
 
 A live, radial map of your home network for Home Assistant. Every device orbits the router, switch, access point or mesh node it connects through, colored by whether it's answering right now, was seen recently, or has gone quiet.
 
@@ -112,7 +114,7 @@ Placement you choose always wins over automatic placement. Each device shows how
 
 ## Install
 
-NetOrbit installs from the Home Assistant **Marketplace** (Home Assistant 2026.11 and newer) or from **HACS** (older versions). It's the same repository either way. HACS is built into Home Assistant as the Marketplace starting with 2026.11, which is expected around early November 2026. Until that release is out and settled, the exact screens below may differ a little.
+NetOrbit is in the default store, so you can find it by searching. On Home Assistant 2026.11 and newer that's the built-in **Marketplace**; on older versions it's **HACS**. It's the same repository either way.
 
 NetOrbit needs Home Assistant 2026.2 or newer.
 
@@ -120,8 +122,8 @@ NetOrbit needs Home Assistant 2026.2 or newer.
 
 [![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=the-scott-davis&repository=netorbit&category=integration)
 
-1. Click the button above, or go to **Settings > Marketplace** and add `https://github.com/the-scott-davis/netorbit` as a custom repository with type **Integration**. Adding a custom repository asks you to connect a GitHub account once.
-2. Download **NetOrbit**. Home Assistant shows a warning that community code runs with full access to your home; read it and confirm.
+1. Click the button above, or go to **Settings > Marketplace** and search for **NetOrbit**.
+2. Download it. Home Assistant shows a warning that community code runs with full access to your home; read it and confirm.
 3. Set it up when asked, or go to **Settings > Devices & services > Add integration > NetOrbit**. The subnet and router are filled in for you. No restart is needed for a first install.
 4. Refresh your browser once so the card loads, then [add the map to a dashboard](#add-the-map-to-a-dashboard).
 
@@ -129,12 +131,9 @@ Updates show up in **Settings > Updates** like any other. Updating still needs a
 
 ### HACS (Home Assistant 2026.10 and older)
 
-[![Open NetOrbit in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=the-scott-davis&repository=netorbit&category=integration)
-
-1. In HACS, open the menu, choose **Custom repositories**, add `https://github.com/the-scott-davis/netorbit` with type **Integration**.
-2. Download **NetOrbit** and restart Home Assistant.
-3. Go to **Settings > Devices & services > Add integration > NetOrbit**.
-4. [Add the map to a dashboard](#add-the-map-to-a-dashboard).
+1. In HACS, search for **NetOrbit** and download it, then restart Home Assistant.
+2. Go to **Settings > Devices & services > Add integration > NetOrbit**.
+3. [Add the map to a dashboard](#add-the-map-to-a-dashboard).
 
 HACS on 2026.10 and older shows a blank icon for NetOrbit in its list. That's expected: older HACS only looks up icons on Home Assistant's brand site, which no longer takes new custom integrations. NetOrbit ships its own icon, which Home Assistant shows on the integration's page and the Marketplace shows everywhere.
 
