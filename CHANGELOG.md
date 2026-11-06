@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Releases now carry `netorbit.zip`.** Each release attaches the integration as a zip, and HACS and the Marketplace install from it. This gives NetOrbit a download count in both stores. The count starts with the first release that has the zip and includes updates, so it runs higher than the number of users.
+
 ## 0.3.0
 
 ### Added
