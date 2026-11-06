@@ -15,6 +15,9 @@
 - **The assistant tool that undoes hand placement** (`netorbit_reset_placement`) is now marked destructive, since those placements can only be set again by hand (thanks @xlntech1, #52).
 - **Saved videos start right away** and end without the long pause at the start and end (#29).
 
+### Known issues
+- **Devices that left before you upgraded may show online.** If a device left before 0.3.0 and its address has since gone to another device, it can stay online, because the #47 check needs an address saved by 0.3.0. To clear it, open the device under the integration's Configure menu and choose "Stop tracking and ignore this device", or call `netorbit.ignore_device`. This happens only once: devices that leave from now on go offline as #47 describes (thanks @ninchistudios, #65).
+
 ## 0.2.10
 
 ### Fixed
