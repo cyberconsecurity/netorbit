@@ -19,6 +19,10 @@ const NO_ICON_PENDING = new Set();
 // that asked (a second card, or the card editor's preview, would otherwise keep blank icons).
 const NO_ICON_CARDS = new Set();
 
+// Where the drag ghost waits between drags: far outside any map, radial or balloon (which runs into negative
+// coordinates, so the old -500 showed as a stray circle).
+const NO_PARK = -100000;
+
 // mdi:pin, drawn on pinned devices in edit mode.
 const NO_PIN_PATH = "M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z";
 // mdi:orbit, the NetOrbit mark on shared images and videos.
@@ -182,6 +186,262 @@ function netorbitSpreadHubs(pos, keys, o) {
   }
 }
 
+/** Discs [x, y, r] on a coarse grid, to ask quickly whether another disc touches any of them (with `gap` to spare). */
+function noGrid(discs) {
+  const cell = 48;
+  const cells = new Map();
+  const span = (v, r) => [Math.floor((v - r) / cell), Math.floor((v + r) / cell)];
+  discs.forEach((b) => {
+    const [i0, i1] = span(b[0], b[2]), [j0, j1] = span(b[1], b[2]);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const k = i + "," + j;
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push(b);
+    }
+  });
+  return {
+    hits(b, gap) {
+      const [i0, i1] = span(b[0], b[2] + gap), [j0, j1] = span(b[1], b[2] + gap);
+      for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+        const list = cells.get(i + "," + j);
+        if (list && list.some((q) => Math.hypot(q[0] - b[0], q[1] - b[1]) < q[2] + b[2] + gap)) return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** Balloon layout: every hub sits in the middle of its own ring of devices, and child hubs branch away from their
+ * parent, each in a wedge wide enough for everything below it. A chain of switches becomes a line of hubs instead of
+ * piling up beside the router, and a busy access point gets a circle of its own. Returns what netorbitLayout does,
+ * plus the centre each device's ring is drawn around (ox, oy) and the part of the map to show (view). The map is
+ * turned to suit the card's shape (opts.aspect, width over height). Pure; exported for tests. */
+function netorbitBalloonLayout(model, opts) {
+  const o = Object.assign({ gap: 38, ring: 72, maxRing: 240, clear: 78, link: 110, pad: 16, back: 1.25, chars: 22, charW: 7, aspect: 1.5, margin: 34 }, opts || {});
+  const { hubs, root, devices } = model;
+  const kidsHub = {};
+  const kidsDev = {};
+  Object.keys(hubs).forEach((k) => { kidsHub[k] = []; kidsDev[k] = []; });
+  Object.values(hubs).forEach((h) => { if (h.key !== root) kidsHub[hubs[h.parent] ? h.parent : root].push(h.key); });
+  devices.forEach((d) => kidsDev[hubs[d.link] ? d.link : root].push(d));
+  const lab = (n) => String(n.sort != null ? n.sort : n.label);
+  Object.values(kidsDev).forEach((a) => a.sort((x, y) => lab(x).localeCompare(lab(y))));
+  Object.values(kidsHub).forEach((a) => a.sort((x, y) => (x === "__new") - (y === "__new") || lab(hubs[x]).localeCompare(lab(hubs[y]))));
+
+  // The tree actually drawn: each hub once, and hubs caught in a loop (or under a missing parent) off the root.
+  const children = {};
+  const depth = {};
+  const visit = (h, dep) => {
+    depth[h] = dep;
+    children[h] = [];
+    kidsHub[h].forEach((c) => { if (!(c in depth)) { children[h].push(c); visit(c, dep + 1); } });
+  };
+  visit(root, 0);
+  Object.keys(hubs).forEach((h) => { if (!(h in depth)) { children[root].push(h); visit(h, 1); } });
+
+  const labLen = (d) => Math.min(String(d.label == null ? "" : d.label).length, o.chars) * o.charW;
+  // Bottom up, each hub in a frame of its own: the hub at 0,0 and its parent off to the left (-x), so everything
+  // below it fans out to the right. A branch is summed up as the discs it covers in that frame (hubs, devices and
+  // the ends of their labels). Its parent puts it far enough out that none of it reaches back past the parent, in a
+  // wedge as wide as the branch looks from there. Branches never overlap, and a chain of switches grows by about a
+  // hub per step.
+  const plan = {};
+  const size = (h) => {
+    const devs = kidsDev[h];
+    const kids = children[h];
+    const B = {};
+    kids.forEach((c) => (B[c] = size(c)));
+    const A = h === root ? Math.PI * 2 : Math.PI * 2 - o.back;
+    // The closest a child can sit: all of it ahead of this hub, clear of this hub's own disc.
+    const near = {};
+    kids.forEach((c) => (near[c] = Math.max(...B[c].map((b) => b[2] - b[0])) + o.clear));
+    // How wide a child looks from here at a distance, either side of the line to it.
+    const wedge = (c, d) => {
+      let up = 0, lo = 0;
+      B[c].forEach(([x, y, r]) => {
+        up = Math.max(up, Math.atan2(y + r + o.pad, d + x));
+        lo = Math.max(lo, Math.atan2(r + o.pad - y, d + x));
+      });
+      return { up, lo, need: up + lo };
+    };
+    // Child hubs take the angle they need as close in as they fit; the devices share what's left, on a ring as wide
+    // as that takes. Only when the devices would need a very wide ring do the child hubs move further out (each
+    // further out needs a narrower wedge). Widening the ring is cheap, while pushing a whole branch out is not.
+    // The middle hub is bigger and has no gap towards a parent for its label, so its ring sits a little wider.
+    const minRing = h === root ? o.ring + 26 : o.ring;
+    let ring = minRing;
+    let far = 1;
+    const kidNeed = (c) => wedge(c, near[c] * far).need;
+    let kidsNeed = 0;
+    for (let i = 0; i < 400; i++) {
+      kidsNeed = kids.reduce((n, c) => n + kidNeed(c), 0);
+      const room = A - kidsNeed;
+      if (!devs.length) { if (room >= 0) break; }
+      else {
+        const want = room > 0 ? (devs.length * o.gap) / room : Infinity;
+        if (want <= o.maxRing || (!kids.length && want < Infinity)) { ring = Math.max(minRing, want); break; }
+      }
+      far *= 1.04;
+    }
+    const devNeed = devs.length ? (devs.length * o.gap) / ring : 0;
+    // Spare angle is shared out in proportion, so nothing bunches up at one end.
+    const total = devNeed + kidsNeed;
+    const stretch = total > 0 ? A / total : 1;
+    const items = [];
+    const half = Math.ceil(devs.length / 2);
+    // Devices either side, child hubs in the middle: straight on, away from the parent.
+    devs.slice(0, half).forEach((d) => items.push({ d, need: (o.gap / ring) * stretch }));
+    kids.forEach((c) => { const dist = near[c] * far; const w = wedge(c, dist); items.push({ c, dist, need: w.need * stretch, up: w.up, lo: w.lo }); });
+    devs.slice(half).forEach((d) => items.push({ d, need: (o.gap / ring) * stretch }));
+    // Angles in this hub's frame: round from just past the parent's direction (pi) to just before it again. A child
+    // whose branch is lopsided is turned so the branch sits in the middle of its wedge.
+    let at = h === root ? -Math.PI / 2 : Math.PI + o.back / 2;
+    items.forEach((it) => { it.a = at + it.need / 2 - (it.c ? (it.up - it.lo) / 2 : 0); at += it.need; });
+    // What a device covers here: its disc, and its label as a row of small discs out to the end of the text.
+    const devBits = (it) => {
+      const cx = Math.cos(it.a), cy = Math.sin(it.a);
+      const out = [[ring * cx, ring * cy, 20]];
+      const end = ring + 24 + labLen(it.d);
+      for (let t = ring + 30; t < end + 7; t += 14) out.push([Math.min(t, end) * cx, Math.min(t, end) * cy, 8]);
+      return out;
+    };
+    // A child branch turned and moved to where it goes in this hub's frame.
+    const kidBits = (it) => {
+      const cx = Math.cos(it.a), cy = Math.sin(it.a);
+      return B[it.c].map(([x, y, r]) => [it.dist * cx + x * cx - y * cy, it.dist * cy + x * cy + y * cx, r]);
+    };
+    // Tighten: wedges assume each neighbour fills its own right in to this hub, which it rarely does. Pull each child
+    // branch in along its line, furthest first, for as long as it stays clear of everything else here.
+    // The line from this hub out to a child, so a branch pulled in doesn't end up across another's link.
+    const linkBits = (it) => {
+      const out = [];
+      // From just outside this hub's own disc (56) to just short of the child's.
+      for (let t = 72; t < it.dist - 30; t += 16) out.push([t * Math.cos(it.a), t * Math.sin(it.a), 3]);
+      return out;
+    };
+    // A branch may also turn a little round this hub into a gap, then come in further, so branches settle into the
+    // space near the middle instead of all waiting at the same distance. They can't pass each other: every link is
+    // in the way, including the one coming in from this hub's parent.
+    const kidItems = items.filter((it) => it.c);
+    const inLink = [];
+    if (h !== root) for (let t = 72; t < 260; t += 16) inLink.push([-t, 0, 3]);
+    const clearOf = (it) => {
+      const others = [[0, 0, 56]].concat(inLink);
+      items.forEach((jt) => { if (jt !== it) others.push(...(jt.d ? devBits(jt) : kidBits(jt).concat(linkBits(jt)))); });
+      return noGrid(others);
+    };
+    const fits = (it, grid) => !kidBits(it).concat(linkBits(it)).some((b) => grid.hits(b, o.pad / 2));
+    // Big steps first, so a branch far out comes in quickly, then smaller ones to settle it.
+    for (let round = 0, moved = true; moved && round < 40; round++) {
+      moved = false;
+      kidItems.slice().sort((p, q) => q.dist - p.dist).forEach((it) => {
+        if (it.dist - 12 < o.link) return;
+        const grid = clearOf(it);
+        const was = { a: it.a, dist: it.dist };
+        for (const step of [96, 48, 24, 12]) {
+          if (was.dist - step < o.link) continue;
+          for (const turn of [0, 0.03, -0.03, 0.07, -0.07]) {
+            it.a = was.a + turn;
+            it.dist = was.dist - step;
+            if (fits(it, grid)) { moved = true; return; }
+          }
+        }
+        it.a = was.a;
+        it.dist = was.dist;
+      });
+    }
+    // What this branch covers, in this hub's frame: the hub and its label, each device and its label, and every
+    // child branch where it goes.
+    const bits = [[0, 0, 56]];
+    items.forEach((it) => bits.push(...(it.d ? devBits(it) : kidBits(it))));
+    plan[h] = { ring, items };
+    return bits;
+  };
+  size(root);
+
+  // Top down: place each hub, its ring of devices and its children. `turn` turns the hub's own frame onto the map.
+  const pos = {};
+  const place = (h, x, y, turn) => {
+    const P = plan[h];
+    pos[h] = { x, y, a: turn, r: 0, depth: depth[h] };
+    P.items.forEach((it) => {
+      const a = turn + it.a;
+      if (it.d) pos[it.d.key] = { x: x + P.ring * Math.cos(a), y: y + P.ring * Math.sin(a), a, r: P.ring, ox: x, oy: y, hub: h };
+      else place(it.c, x + it.dist * Math.cos(a), y + it.dist * Math.sin(a), a);
+    });
+  };
+  place(root, 0, 0, 0);
+
+  // Everything a node and its label cover, for fitting the map to the card.
+  const extent = (rot) => {
+    const c = Math.cos(rot), s = Math.sin(rot);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const take = (x, y, l, r, t, b) => { x0 = Math.min(x0, x - l); x1 = Math.max(x1, x + r); y0 = Math.min(y0, y - t); y1 = Math.max(y1, y + b); };
+    Object.keys(hubs).forEach((k) => {
+      const p = pos[k];
+      if (p) take(p.x * c - p.y * s, p.x * s + p.y * c, 70, 70, 60, 64);
+    });
+    devices.forEach((d) => {
+      const p = pos[d.key];
+      if (!p) return;
+      const x = p.x * c - p.y * s, y = p.x * s + p.y * c;
+      const a = p.a + rot, far = p.r + 24 + labLen(d);
+      const ox = p.ox * c - p.oy * s, oy = p.ox * s + p.oy * c;
+      take(x, y, 22, 22, 22, 22);
+      take(ox + far * Math.cos(a), oy + far * Math.sin(a), 6, 6, 8, 8);
+    });
+    return { x0, y0, x1, y1 };
+  };
+  // Turn the map so it fills the card best: the largest scale that fits a box of the card's shape.
+  let best = null;
+  for (let i = 0; i < 24; i++) {
+    const rot = (i * Math.PI) / 12;
+    const e = extent(rot);
+    const fit = Math.min(o.aspect / (e.x1 - e.x0), 1 / (e.y1 - e.y0));
+    if (!best || fit > best.fit + 1e-9) best = { rot, e, fit };
+  }
+  const c = Math.cos(best.rot), s = Math.sin(best.rot);
+  Object.values(pos).forEach((p) => {
+    const x = p.x, y = p.y;
+    p.x = +(x * c - y * s).toFixed(2); p.y = +(x * s + y * c).toFixed(2);
+    p.a += best.rot;
+    if (p.ox != null) { const ox = p.ox; p.ox = +(ox * c - p.oy * s).toFixed(2); p.oy = +(ox * s + p.oy * c).toFixed(2); }
+  });
+  const e = best.e;
+  // At least the radial map's size, so a small network isn't blown up past the size things are drawn at.
+  let w = e.x1 - e.x0 + 2 * o.margin, h = e.y1 - e.y0 + 2 * o.margin;
+  const minH = 620, minW = minH * o.aspect;
+  const view = { x: e.x0 - o.margin - Math.max(0, minW - w) / 2, y: e.y0 - o.margin - Math.max(0, minH - h) / 2, w: Math.max(w, minW), h: Math.max(h, minH) };
+  // Keep the shape of the card where the map is longer one way, so it never comes out as a thin strip.
+  if (view.w / view.h < o.aspect) { const nw = view.h * o.aspect; view.x -= (nw - view.w) / 2; view.w = nw; }
+  return { pos, slots: [], N: devices.length, arc: o.gap, kidsHub, depth, view, balloon: true, maxChars: o.chars };
+}
+
+/** One hub's branch on its own: that hub as the root, with every hub and device below it, and the hub above it as a
+ * grey "up" hub (kind "uphub") hanging off it, without its devices, as the way back up. `path` runs from the whole
+ * map's root down to the hub, for the row of links back. Anything else (no such hub, or the root itself) is the
+ * whole map. Pure; exported for tests. */
+function netorbitFocus(model, key) {
+  const { hubs, devices, root } = model;
+  if (!key || key === root || !hubs[key]) return model;
+  const keep = new Set([key]);
+  for (let grew = true; grew;) {
+    grew = false;
+    Object.values(hubs).forEach((h) => { if (!keep.has(h.key) && keep.has(h.parent) && h.key !== root) { keep.add(h.key); grew = true; } });
+  }
+  const sub = {};
+  keep.forEach((k) => (sub[k] = k === key ? Object.assign({}, hubs[k], { parent: null }) : hubs[k]));
+  const path = [];
+  for (let k = key, guard = 0; k && hubs[k] && guard < 50; k = hubs[k].parent, guard++) {
+    path.unshift(k);
+    if (k === root) break;
+  }
+  if (path[0] !== root) path.unshift(root);
+  const up = path.length > 1 ? path[path.length - 2] : null;
+  if (up && hubs[up] && !keep.has(up)) sub[up] = Object.assign({}, hubs[up], { parent: key, kind: "uphub" });
+  return Object.assign({}, model, { hubs: sub, root: key, devices: devices.filter((d) => keep.has(d.link)), internet: null, focus: key, path, up });
+}
+
 const NO_PLACEMENT = {
   manual: "You placed it",
   controller: "Reported by your Wi-Fi system",
@@ -210,13 +470,13 @@ function netorbitDraw(model, cfg, opts) {
   cfg = cfg || {};
   opts = opts || {};
   const { hubs, devices, root } = model;
-  const L = netorbitLayout(model, {});
+  const L = opts.layout === "balloon" ? netorbitBalloonLayout(model, { aspect: opts.aspect }) : netorbitLayout(model, {});
   const pos = L.pos;
   const C = pos[root];
   const col = (s) => (s === "group" ? "#64748b" : (NO_STATUS[s] || NO_STATUS.unknown).color);
   const live = (s) => s === "online";
   const fs = Math.max(9, Math.min(12.5, L.arc * 0.42));
-  const maxChars = L.N > 60 ? 16 : 22;
+  const maxChars = L.maxChars || (L.N > 60 ? 16 : 22);
   const edit = !!opts.edit;
   const scene = { C, links: [], nodes: [], hubLabels: [], devLabels: [] };
 
@@ -234,9 +494,10 @@ function netorbitDraw(model, cfg, opts) {
   Object.values(hubs).forEach((h) => {
     if (h.key === root || !pos[h.key]) return;
     const p = pos[hubs[h.parent] ? h.parent : root];
-    const s = h.kind === "newhub" ? "new" : h.status;
+    // The way back up from a branch is grey and dashed, whatever the state of the hub above.
+    const s = h.kind === "newhub" ? "new" : h.kind === "uphub" ? "group" : h.status;
     const faint = h.kind === "group" ? "faint" : "strong";
-    link(h.key, `${faint} ${live(s) ? "live" : ""} ${h.kind === "newhub" ? "dashed" : ""}`, curve(p, pos[h.key], 0), col(s));
+    link(h.key, `${faint} ${live(s) ? "live" : ""} ${h.kind === "newhub" || h.kind === "uphub" ? "dashed" : ""}`, curve(p, pos[h.key], 0), col(s));
   });
   // The internet sits just above the router: green when public DNS servers answer, red when they
   // don't but the router does, grey when NetOrbit can't tell.
@@ -254,7 +515,8 @@ function netorbitDraw(model, cfg, opts) {
   devices.forEach((d) => {
     const p = pos[d.key];
     if (!p || !pos[p.hub]) return;
-    link(d.key, `${live(d.status) ? "live" : ""} ${d.kind === "new" ? "dashed" : ""} ${d.suggested ? "sug" : ""}`, curve(pos[p.hub], p), d.suggested ? NO_SUGGEST.color : col(d.status));
+    // In the balloon layout a device's link is a straight spoke from its own hub.
+    link(d.key, `${live(d.status) ? "live" : ""} ${d.kind === "new" ? "dashed" : ""} ${d.suggested ? "sug" : ""}`, curve(pos[p.hub], p, L.balloon ? 0 : undefined), d.suggested ? NO_SUGGEST.color : col(d.status));
   });
 
   // Icons are drawn as SVG paths, not <ha-icon> in a <foreignObject>: WebKit (Safari, the iOS/iPadOS companion
@@ -269,18 +531,24 @@ function netorbitDraw(model, cfg, opts) {
 
   let gfx = "";
   let labels = "";
-  // Text boxes of hub labels placed so far; the router's label always sits right below it.
-  const placedLabels = [{ x0: C.x - 45, y0: C.y + 32 + 5, x1: C.x + 45, y1: C.y + 32 + 30 }];
+  // Text boxes of hub labels placed so far; on the radial map the router's label always sits right below it. In the
+  // balloon layout the middle hub has devices round it, so its label picks a side like any other hub's.
+  const rootBelow = !L.balloon;
+  const placedLabels = rootBelow ? [{ x0: C.x - 45, y0: C.y + 32 + 5, x1: C.x + 45, y1: C.y + 32 + 30 }] : [];
+  // There the Internet node and its label (to its right) count as taken too, so the router's label goes elsewhere.
+  if (!rootBelow && pos.internet) placedLabels.push({ x0: pos.internet.x - 20, y0: pos.internet.y - 20, x1: pos.internet.x + 100, y1: pos.internet.y + 14 });
   Object.values(hubs).forEach((h) => {
     const p = pos[h.key];
     if (!p) return;
     const isRoot = h.key === root;
     const isNew = h.kind === "newhub";
     const isGroup = h.kind === "group";
+    const isUp = h.kind === "uphub";
     const r = isRoot ? 32 : isGroup ? 19 : 25;
-    const c = col(isNew ? "new" : h.status);
+    const c = col(isNew ? "new" : isUp ? "group" : h.status);
     let sub = isNew
       ? `${devices.filter((d) => d.kind === "new").length} waiting`
+      : isUp ? "Up a level"
       : isGroup ? `${h.count} devices`
       : (cfg.show_ip && h.ip) ? h.ip : (NO_HUB_TYPE[h.hub_type] || "");
     if (String(sub).toLowerCase() === String(h.label).toLowerCase()) sub = "";
@@ -298,6 +566,18 @@ function netorbitDraw(model, cfg, opts) {
     const discs = Object.values(hubs).filter((o) => o.key !== h.key && pos[o.key])
       .map((o) => square(pos[o.key], (o.key === root ? 32 : o.kind === "group" ? 19 : 25) + 6));
     const near = devices.map((d) => pos[d.key]).filter((q) => q && Math.abs(q.x - p.x) < 220 && Math.abs(q.y - p.y) < 120).map((q) => square(q, 19));
+    // In the balloon layout device labels run out from right beside the hub, so they count too.
+    if (L.balloon) {
+      devices.forEach((d) => {
+        const q = pos[d.key];
+        if (!q || q.ox == null) return;
+        const len = noTrunc(d.label, maxChars).length * fs * 0.56;
+        for (let t = q.r + 24; t < q.r + 24 + len; t += 12) {
+          const lx = q.ox + t * Math.cos(q.a), ly = q.oy + t * Math.sin(q.a);
+          if (Math.abs(lx - p.x) < 220 && Math.abs(ly - p.y) < 120) near.push(square({ x: lx, y: ly }, 7));
+        }
+      });
+    }
     const cost = (s) => {
       const b = box(s);
       return placedLabels.reduce((n, o) => n + 4 * overlap(b, o), 0)
@@ -310,22 +590,28 @@ function netorbitDraw(model, cfg, opts) {
       { side: "right", x: p.x + r + 10, y1: p.y - 2, anchor: "start" },
       { side: "left", x: p.x - r - 10, y1: p.y - 2, anchor: "end" },
     ];
-    if (!(isRoot || p.y >= C.y - 4)) sides.unshift(sides.splice(1, 1)[0]);
-    const pick = isRoot ? sides[0] : (sides.find((s) => cost(s) === 0) || sides.reduce((a, s) => (cost(s) < cost(a) ? s : a)));
-    if (!isRoot) placedLabels.push(box(pick));
+    if (L.balloon) {
+      // Try the side facing the parent first: devices leave a gap there, and only the link to the parent crosses it.
+      const back = p.a + Math.PI;
+      const dir = { below: Math.PI / 2, above: -Math.PI / 2, right: 0, left: Math.PI };
+      sides.sort((s, t) => Math.cos(dir[t.side] - back) - Math.cos(dir[s.side] - back));
+    } else if (!(isRoot || p.y >= C.y - 4)) sides.unshift(sides.splice(1, 1)[0]);
+    const fixed = isRoot && rootBelow;
+    const pick = fixed ? sides[0] : (sides.find((s) => cost(s) === 0) || sides.reduce((a, s) => (cost(s) < cost(a) ? s : a)));
+    if (!fixed) placedLabels.push(box(pick));
     const ly1 = pick.y1;
     const ly2 = ly1 + 16;
     const lx = pick.x;
     const anchor = pick.anchor;
     const target = edit && h.kind === "hub" ? "target" : "";
-    gfx += `<g class="node hub ${isGroup ? "group" : ""} ${target}" data-key="${noEsc(h.key)}">` +
-      (isGroup ? "" : `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r + 9}" class="halo" fill="${c}"/>`) +
-      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" class="disc ${isNew || isGroup ? "dashed" : ""} ${h.status === "stale" ? "pulse" : ""}" stroke="${c}"/>` +
+    gfx += `<g class="node hub ${isGroup ? "group" : ""} ${isUp ? "up" : ""} ${target}" data-key="${noEsc(h.key)}">` +
+      (isGroup || isUp ? "" : `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r + 9}" class="halo" fill="${c}"/>`) +
+      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" class="disc ${isNew || isGroup || isUp ? "dashed" : ""} ${h.status === "stale" && !isUp ? "pulse" : ""}" stroke="${c}"/>` +
       iconFO(p, r, h.icon, c) + `</g>`;
-    scene.nodes.push({ k: h.key, x: p.x, y: p.y, r, color: c, icon: h.icon, hub: true, root: isRoot, halo: !isGroup, dashed: isNew || isGroup });
+    scene.nodes.push({ k: h.key, x: p.x, y: p.y, r, color: c, icon: h.icon, hub: true, root: isRoot, halo: !isGroup && !isUp, dashed: isNew || isGroup || isUp });
     // Hub labels go in their own layer, drawn after devices so nothing covers them.
     labels += `<g class="hlabels" data-k="${noEsc(h.key)}" pointer-events="none">` +
-      `<text x="${lx.toFixed(1)}" y="${ly1.toFixed(1)}" class="hlab ${isGroup ? "glab" : ""}" style="text-anchor:${anchor}">${noEsc(shown)}</text>` +
+      `<text x="${lx.toFixed(1)}" y="${ly1.toFixed(1)}" class="hlab ${isGroup || isUp ? "glab" : ""}" style="text-anchor:${anchor}">${noEsc(shown)}</text>` +
       (sub ? `<text x="${lx.toFixed(1)}" y="${ly2.toFixed(1)}" class="hsub" style="text-anchor:${anchor}">${noEsc(sub)}</text>` : "") +
       `</g>`;
     scene.hubLabels.push({ k: h.key, x: lx, y: ly1, y2: ly2, text: shown, sub, anchor, group: isGroup });
@@ -338,8 +624,10 @@ function netorbitDraw(model, cfg, opts) {
     const deg = (p.a * 180) / Math.PI;
     const nd = ((deg % 360) + 360) % 360;
     const flip = nd > 90 && nd < 270;
+    // Labels point away from the centre of the device's ring: the router, or in the balloon layout its own hub.
     const tr = p.r + 24;
-    const tx = C.x + tr * Math.cos(p.a), ty = C.y + tr * Math.sin(p.a);
+    const ox = p.ox != null ? p.ox : C.x, oy = p.oy != null ? p.oy : C.y;
+    const tx = ox + tr * Math.cos(p.a), ty = oy + tr * Math.sin(p.a);
     const rot = flip ? deg + 180 : deg;
     const pinned = edit && d.placement === "manual";
     const text = noTrunc(d.label, maxChars);
@@ -376,7 +664,7 @@ function netorbitDraw(model, cfg, opts) {
     if (d.kind === "more") { d.members.forEach((m) => { if (counts[m.status] !== undefined) counts[m.status]++; }); return; }
     if (counts[d.status] !== undefined && !String(d.key).startsWith("sug:")) counts[d.status]++;
   });
-  return { L, pos, C, links, gfx, labels, counts, scene };
+  return { L, pos, C, links, gfx, labels, counts, scene, view: L.view || null };
 }
 
 // ------------------------------------------------------------------ scanning
@@ -603,6 +891,17 @@ const NO_SHARE_FONT = "Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif";
 // Size of the share image and video frame in map units: a header band, the map (1140 x 1090) and a footer line.
 const NO_SHARE = { w: 1140, h: 1220, mapY: 80 };
 
+/** The share image and video frame for a drawn map: width and height (W, H), where the map goes (mapY, mapH) and
+ * how map units scale into it (view, s). The radial map gives the fixed 1140 x 1220 frame; a balloon map, which is
+ * usually wider, gets a frame of its own shape, up to 1600 wide. */
+function noShareFrame(D) {
+  const v = (D && D.view) || { x: -70, y: -40, w: 1140, h: 1090 };
+  const W = D && D.view ? Math.round(Math.min(1600, Math.max(NO_SHARE.w, v.w))) : NO_SHARE.w;
+  const s = W / v.w;
+  const mapH = Math.round(v.h * s);
+  return { W, H: NO_SHARE.mapY + mapH + 50, mapY: NO_SHARE.mapY, mapH, view: v, s, radial: !(D && D.view) };
+}
+
 function noShareCounts(smodel) {
   const counts = { online: 0, recent: 0, stale: 0 };
   smodel.devices.forEach((d) => {
@@ -611,10 +910,12 @@ function noShareCounts(smodel) {
   return counts;
 }
 
-/** The share image as a standalone SVG document, built from a shareModel. */
-function netorbitShareSvg(smodel, title) {
-  const D = netorbitDraw(smodel, { show_ip: false }, {});
-  const W = NO_SHARE.w, H = NO_SHARE.h;
+/** The share image as a standalone SVG document, built from a shareModel, in the layout on show (radial unless
+ * `layout` is "balloon"). */
+function netorbitShareSvg(smodel, title, layout) {
+  const D = netorbitDraw(smodel, { show_ip: false }, { layout, aspect: 1.4 });
+  const F = noShareFrame(D);
+  const W = F.W, H = F.H, v = F.view;
   const counts = noShareCounts(smodel);
   let chips = "";
   let x = W - 24;
@@ -632,8 +933,8 @@ function netorbitShareSvg(smodel, title) {
     `<rect width="${W}" height="${H}" fill="url(#nobg)"/>` +
     `<path d="${NO_ORBIT_PATH}" fill="${NO_BLUE}" transform="translate(26 22) scale(1.4)"/>` +
     `<text x="70" y="49" font-size="26" font-weight="600" fill="#f1f5f9">${noEsc(noTrunc(title, 40))}</text>${chips}` +
-    `<svg x="0" y="${NO_SHARE.mapY}" width="1140" height="1090" viewBox="-70 -40 1140 1090">` +
-    `<circle class="ring" cx="${D.C.x}" cy="${D.C.y}" r="370"/>${D.links}${D.gfx}${D.labels}</svg>` +
+    `<svg x="0" y="${F.mapY}" width="${W}" height="${F.mapH}" viewBox="${v.x} ${v.y} ${v.w} ${v.h}">` +
+    `${F.radial ? `<circle class="ring" cx="${D.C.x}" cy="${D.C.y}" r="370"/>` : ""}${D.links}${D.gfx}${D.labels}</svg>` +
     `<path d="${NO_ORBIT_PATH}" fill="${NO_BLUE}" transform="translate(${W - 196} ${H - 34}) scale(0.75)"/>` +
     `<text x="${W - 22}" y="${H - 20}" font-size="15" fill="#94a3b8" text-anchor="end">made with NetOrbit</text></svg>`;
 }
@@ -642,7 +943,8 @@ function netorbitShareSvg(smodel, title) {
  * and then the reveal (t from 0 to NO_REVEAL.end and beyond). Everything is computed here, with no CSS
  * animation, so recording doesn't depend on the page. */
 function netorbitPaintFrame(ctx, scene, t, o) {
-  const W = NO_SHARE.w, H = NO_SHARE.h;
+  const F = o.frame || noShareFrame(null);
+  const W = F.W, H = F.H;
   const k = ctx.canvas.width / W;
   const C = scene.C;
   const g = netorbitRevealGlobal(t);
@@ -706,7 +1008,8 @@ function netorbitPaintFrame(ctx, scene, t, o) {
 
   // Map, in its own coordinates.
   ctx.save();
-  ctx.translate(70, NO_SHARE.mapY + 40);
+  ctx.translate(-F.view.x * F.s, F.mapY - F.view.y * F.s);
+  ctx.scale(F.s, F.s);
   // Radar.
   if (g.radar > 0) {
     ctx.globalAlpha = g.radar;
@@ -738,8 +1041,10 @@ function netorbitPaintFrame(ctx, scene, t, o) {
     ctx.lineCap = "butt";
   }
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = "rgba(148,163,184,.07)"; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.arc(C.x, C.y, 370, 0, Math.PI * 2); ctx.stroke();
+  if (F.radial) {
+    ctx.strokeStyle = "rgba(148,163,184,.07)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(C.x, C.y, 370, 0, Math.PI * 2); ctx.stroke();
+  }
 
   const state = {};
   scene.nodes.forEach((n) => {
@@ -820,7 +1125,7 @@ function netorbitPaintFrame(ctx, scene, t, o) {
   const pa = scanning ? 1 : g.pill;
   if (pa > 0) {
     ctx.globalAlpha = pa;
-    const pw = 470, ph = scanning ? 92 : 64, px = (W - pw) / 2, py = NO_SHARE.mapY + 1090 - ph - 40;
+    const pw = 470, ph = scanning ? 92 : 64, px = (W - pw) / 2, py = F.mapY + F.mapH - ph - 40;
     ctx.fillStyle = "rgba(11,18,32,.9)"; ctx.strokeStyle = "rgba(96,165,250,.35)"; ctx.lineWidth = 1;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 16); else ctx.rect(px, py, pw, ph);
@@ -904,6 +1209,15 @@ function netorbitZoomView(view, anchor, now, factor, base = NO_VIEW, max = NO_ZO
   };
 }
 
+// Where a card saves the layout picked in its header: one key per card, from the dashboard view it's on and its
+// config. Two cards only share a key when they're the same card on the same view.
+function noLayoutKey(config, path) {
+  const s = (path || "") + "\n" + JSON.stringify(config || {});
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return "netorbit-layout:" + h.toString(36);
+}
+
 class NetOrbitCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Network" };
@@ -917,7 +1231,53 @@ class NetOrbitCard extends HTMLElement {
     this._sig = "";
     this._edit = false;
     this._view = null; // the part of the map on show; null is the whole map
+    this._focus = null; // the hub whose branch is on show on its own (long-press a hub); null is the whole map
+    // A new config starts again from its own `layout`; a pick in the header is saved for this card only.
+    this._layoutOverride = null;
+    this._layoutKey = noLayoutKey(config, typeof location !== "undefined" ? location.pathname : "");
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  // Radial or balloon. The card's `layout` option, unless the header's switch is shown and was used on this card in
+  // this browser. The pick is saved per card (its dashboard view and its config), so it never reaches another card,
+  // and editing the card's config starts again from `layout`.
+  _layoutName() {
+    const own = this._config.layout === "balloon" ? "balloon" : "radial";
+    if (this._config.layout_toggle === false) return own;
+    if (this._layoutOverride) return this._layoutOverride;
+    let picked = null;
+    try { picked = window.localStorage.getItem(this._layoutKey); } catch (e) { /* storage blocked */ }
+    return picked === "radial" || picked === "balloon" ? picked : own;
+  }
+
+  // The card's shape (width over height) for the balloon map to fill: its width against its maximum height.
+  _aspect() {
+    const w = this.clientWidth || 0;
+    const css = noHeight(this._config.height);
+    const vh = (typeof window !== "undefined" && window.innerHeight) || 900;
+    const h = /^\d+(\.\d+)?px$/.test(css) ? Math.min(parseFloat(css), vh * 0.9) : vh * 0.8;
+    return w > 0 && h > 0 ? Math.max(0.7, Math.min(2.4, w / h)) : 1.5;
+  }
+
+  _setLayout(name) {
+    try { window.localStorage.setItem(this._layoutKey, name); } catch (e) { /* storage blocked: this view only */ }
+    this._layoutOverride = name;
+    this._view = null;
+    this._sig = "";
+    this.hass = this._hass;
+  }
+
+  // Show one hub's branch on its own, or the whole map again (null). "up" goes to the branch above the one on show.
+  _drill(key) {
+    const full = this._full;
+    if (key === "up") {
+      const h = full && this._focus && full.hubs[this._focus];
+      key = h && full.hubs[h.parent] && h.parent !== full.root ? h.parent : null;
+    }
+    this._focus = key && full && full.hubs[key] && key !== full.root ? key : null;
+    this._view = null;
+    this._sig = "";
+    if (this._hass) this.hass = this._hass;
   }
 
   getCardSize() { return 12; }
@@ -943,14 +1303,17 @@ class NetOrbitCard extends HTMLElement {
       this._mode = "takeover";
       return;
     }
-    const sig = JSON.stringify([model.sig, this._edit, mode]);
+    // A branch on show on its own whose hub has gone shows the whole map again.
+    this._full = model;
+    if (this._focus && !(model.hubs || {})[this._focus]) { this._focus = null; this._view = null; }
+    const sig = JSON.stringify([model.sig, this._edit, mode, this._layoutName(), this._focus]);
     if (sig === this._sig) return;
     this._sig = sig;
     // The first scan just finished: play the map in once.
     const reveal = this._mode === "takeover" && !!model.root;
     this._mode = mode;
-    if (reveal) this._view = null;
-    this._render(model, reveal ? "reveal" : mode);
+    if (reveal) { this._view = null; this._focus = null; }
+    this._render(this._focus ? netorbitFocus(model, this._focus) : model, reveal ? "reveal" : mode);
     if (reveal) this._playReveal();
   }
 
@@ -1092,7 +1455,13 @@ class NetOrbitCard extends HTMLElement {
     }
     this._model_ = model;
     const edit = this._edit && mode !== "takeover" && mode !== "reveal";
-    const D = netorbitDraw(model, cfg, { edit });
+    // The first scan and the reveal after it always play on the radial map, which the radar is drawn for.
+    const intro = mode === "takeover" || mode === "reveal";
+    const layout = intro ? "radial" : this._layoutName();
+    const D = netorbitDraw(model, cfg, { edit, layout, aspect: this._aspect() });
+    // The part of the map the whole map is: fixed for the radial map, fitted to the balloon map. Zoom works within it.
+    const base = D.view || NO_VIEW;
+    this._base = base;
     const pos = D.pos;
     this._pos = pos;
     const C = D.C;
@@ -1115,6 +1484,19 @@ class NetOrbitCard extends HTMLElement {
       ? `<div class="scanpill"><div class="l1">Scanning your network... found <b class="found">${scan.found}</b> <span class="noun">device${scan.found === 1 ? "" : "s"}</span></div>` +
         `<div class="l2">${noEsc(scan.phase)}</div><div class="bar"><i style="width:${scan.pct}%"></i></div></div>`
       : mode === "reveal" ? `<div class="scanpill"><div class="l1">Found <b>${realDevices}</b> device${realDevices === 1 ? "" : "s"}</div><div class="l2">Your network map is ready</div></div>` : "";
+    const layoutSeg = intro || cfg.layout_toggle === false ? "" :
+      `<span class="lay" role="group" aria-label="Layout">` +
+      `<button data-l="radial" class="${layout === "radial" ? "on" : ""}" title="Every device on one ring round the router">Radial</button>` +
+      `<button data-l="balloon" class="${layout === "balloon" ? "on" : ""}" title="Each hub in the middle of its own devices">Balloon</button></span>`;
+    // A branch on show on its own: the way back up, from the whole map down to this hub.
+    const fullHubs = (this._full && this._full.hubs) || hubs;
+    const crumbs = model.focus && !intro
+      ? `<div class="crumbs"><button class="cr back" data-k=""><ha-icon icon="mdi:arrow-left"></ha-icon>Whole map</button>` +
+        (model.path || []).map((k, i, all) => {
+          const name = noEsc(noTrunc(fullHubs[k] ? fullHubs[k].label : k, 28));
+          return i === all.length - 1 ? `<b>${name}</b>` : `<button class="cr" data-k="${noEsc(k)}">${name}</button>`;
+        }).join(`<span class="sep">›</span>`) + `</div>`
+      : "";
 
     this.shadowRoot.innerHTML = `
 <style>
@@ -1131,7 +1513,7 @@ class NetOrbitCard extends HTMLElement {
   .editbtn ha-icon { --mdc-icon-size:16px; }
   .banner { margin:6px 18px 0; padding:8px 12px; border-radius:8px; background:rgba(37,99,235,.15); border:1px solid rgba(96,165,250,.35); font-size:13px; color:#dbeafe; }
   .wrap { position:relative; }
-  svg { font-family: var(--ha-font-family-body, Roboto, system-ui, sans-serif); width:100%; height:auto; display:block; max-height:${noHeight(cfg.height)}; user-select:none; -webkit-user-select:none; }
+  svg { font-family: var(--ha-font-family-body, Roboto, system-ui, sans-serif); width:100%; height:auto; display:block; max-height:${noHeight(cfg.height)}; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   .ring { fill:none; stroke:rgba(148,163,184,.07); stroke-width:1; }
   .lk { fill:none; stroke-width:1.4; opacity:.45; }
   .lk.strong { stroke-width:2.6; opacity:.75; }
@@ -1204,7 +1586,17 @@ class NetOrbitCard extends HTMLElement {
   .scanchip { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:#bfdbfe; background:rgba(37,99,235,.14); border:1px solid rgba(96,165,250,.45); padding:4px 11px 4px 8px; border-radius:999px; font-variant-numeric:tabular-nums; }
   .scanchip svg { width:15px; height:15px; display:block; }
   .scanchip .rb { animation: spin 1.6s linear infinite; transform-box:fill-box; transform-origin:center; }
-  .revealing .head > .chip, .revealing .head > .sharebtn, .revealing .head > .editbtn { display:none; }
+  .revealing .head > .chip, .revealing .head > .sharebtn, .revealing .head > .editbtn, .revealing .head > .lay { display:none; }
+  .lay { display:inline-flex; gap:2px; padding:2px; border-radius:999px; border:1px solid rgba(148,163,184,.25); background:rgba(148,163,184,.06); }
+  .lay button { font:inherit; font-size:12px; padding:3px 10px; border:none; border-radius:999px; background:transparent; color:#94a3b8; cursor:pointer; }
+  .lay button.on { background:#1e293b; color:#e2e8f0; }
+  .crumbs { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; margin:6px 18px 0; font-size:13px; color:#94a3b8; }
+  .crumbs .cr { font:inherit; display:inline-flex; align-items:center; gap:4px; background:none; border:none; color:#93c5fd; cursor:pointer; padding:2px 4px; border-radius:6px; }
+  .crumbs .cr:hover { background:rgba(148,163,184,.1); }
+  .crumbs .cr.back { margin-right:6px; border:1px solid rgba(96,165,250,.35); padding:2px 10px 2px 6px; border-radius:999px; }
+  .crumbs .cr ha-icon { --mdc-icon-size:16px; }
+  .crumbs b { color:#e2e8f0; font-weight:600; }
+  .node.drill .disc { stroke:#60a5fa !important; stroke-width:6; }
   .revealing .legend, .legend.hide { visibility:hidden; }
   .scanpill { position:absolute; left:50%; bottom:3.5%; transform:translateX(-50%); text-align:center; pointer-events:none; background:rgba(11,18,32,.88); border:1px solid rgba(96,165,250,.35); border-radius:14px; padding:10px 18px 9px; box-shadow:0 8px 30px rgba(0,0,0,.45); min-width:min(300px, 84%); max-width:92%; box-sizing:border-box; }
   .scanpill .l1 { font-size:15px; font-weight:600; color:#e2e8f0; font-variant-numeric:tabular-nums; }
@@ -1262,19 +1654,21 @@ class NetOrbitCard extends HTMLElement {
     <div class="title"><ha-icon icon="mdi:orbit"></ha-icon>${noEsc(cfg.title)}</div>
     ${takeover ? scanChip : `${chip("online")}${chip("recent")}${chip("stale")}${counts.new ? chip("new") : ""}
     ${nSug ? `<span class="chip sug"><i style="background:${NO_SUGGEST.color}"></i>${nSug} possible hub${nSug > 1 ? "s" : ""}</span>` : ""}
+    ${layoutSeg}
     ${scanChip}
     ${share ? `<button class="sharebtn" title="Share an image or video of your map"><ha-icon icon="mdi:share-variant"></ha-icon>Share</button>` : ""}
     ${admin ? `<button class="editbtn ${edit ? "on" : ""}"><ha-icon icon="${edit ? "mdi:check" : "mdi:pencil"}"></ha-icon>${edit ? "Done" : "Edit layout"}</button>` : ""}`}
   </div>
   ${edit ? `<div class="banner">Drag a device onto the hub it connects through, or tap it for more options. Tap a hub to rename it, change its type, move it under another hub, or remove it.</div>` : ""}
+  ${crumbs}
   <div class="wrap">
-    <svg class="map" viewBox="${NO_VIEW.x} ${NO_VIEW.y} ${NO_VIEW.w} ${NO_VIEW.h}" role="img" aria-label="Network map">
+    <svg class="map" viewBox="${base.x} ${base.y} ${base.w} ${base.h}" role="img" aria-label="Network map">
       <defs><filter id="noblur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter></defs>
       ${takeover || mode === "reveal" ? noRadarSvg(C, mode === "reveal") : ""}
-      <circle class="ring" cx="${C.x}" cy="${C.y}" r="370"/>
+      ${D.view ? "" : `<circle class="ring" cx="${C.x}" cy="${C.y}" r="370"/>`}
       ${D.links}
       ${D.gfx}${D.labels}
-      <circle class="ghost" r="17" cx="-500" cy="-500"/>
+      <circle class="ghost" r="17" cx="${NO_PARK}" cy="${NO_PARK}"/>
     </svg>
     <div class="tip"></div>
     ${pill}
@@ -1288,6 +1682,7 @@ class NetOrbitCard extends HTMLElement {
     ${nSug ? `<span><i class="dot" style="background:${NO_SUGGEST.color}"></i>Might be a hub, tap to confirm</span>` : ""}
     ${grouped ? `<span>Grouped by type until NetOrbit knows where they connect</span>` : ""}
     ${cfg.zoom !== false ? `<span>Pinch, double-tap or Ctrl/Cmd+scroll to zoom</span>` : ""}
+    <span>${model.focus ? "Long-press the grey hub to go up a level" : "Long-press a hub to show just its branch"}</span>
   </div>` : ""}
 </ha-card>`;
 
@@ -1295,6 +1690,8 @@ class NetOrbitCard extends HTMLElement {
     if (btn) btn.addEventListener("click", () => { this._edit = !this._edit; this._sig = ""; this.hass = this._hass; });
     const sbtn = this.shadowRoot.querySelector(".sharebtn");
     if (sbtn) sbtn.addEventListener("click", () => this._sharePopup());
+    this.shadowRoot.querySelectorAll(".lay button").forEach((b) => b.addEventListener("click", () => { if (b.dataset.l !== layout) this._setLayout(b.dataset.l); }));
+    this.shadowRoot.querySelectorAll(".crumbs .cr").forEach((b) => b.addEventListener("click", () => this._drill(b.dataset.k || null)));
     this._wire(model);
     this._wireZoom();
     this._resolveIcons();
@@ -1422,20 +1819,23 @@ class NetOrbitCard extends HTMLElement {
     const model = this._model();
     if (!model.root) return "";
     const hide = hideNames !== false;
-    return netorbitShareSvg(shareModel(model, { hideNames: hide }), this._shareTitle(hide));
+    return netorbitShareSvg(shareModel(model, { hideNames: hide }), this._shareTitle(hide), this._layoutName());
   }
 
   // The share image as a PNG blob, drawn from the SVG on an offscreen canvas.
   _sharePng(hide) {
     const svg = this.shareSvg(hide);
+    // The SVG's own size: the radial frame, or the balloon map's.
+    const size = svg.match(/^<svg[^>]* width="(\d+)" height="(\d+)"/);
+    const W = size ? Number(size[1]) : NO_SHARE.w, H = size ? Number(size[2]) : NO_SHARE.h;
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
         try {
           const scale = 1.5;
           const canvas = document.createElement("canvas");
-          canvas.width = Math.round(NO_SHARE.w * scale);
-          canvas.height = Math.round(NO_SHARE.h * scale);
+          canvas.width = Math.round(W * scale);
+          canvas.height = Math.round(H * scale);
           const ctx = canvas.getContext("2d");
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Could not make the image"))), "image/png");
@@ -1453,7 +1853,8 @@ class NetOrbitCard extends HTMLElement {
     const type = noVideoType();
     if (!type) return Promise.reject(new Error("This browser can't record video"));
     const smodel = shareModel(this._model(), { hideNames: hide });
-    const D = netorbitDraw(smodel, { show_ip: false }, {});
+    const D = netorbitDraw(smodel, { show_ip: false }, { layout: this._layoutName(), aspect: 1.4 });
+    const shareFrame = noShareFrame(D);
     const counts = noShareCounts(smodel);
     const total = D.scene.nodes.filter((n) => !n.hub && n.k !== "internet").length;
     const PRE = NO_REVEAL.turn; // one turn of the beam with only the router, as on a first scan
@@ -1461,7 +1862,7 @@ class NetOrbitCard extends HTMLElement {
     const phases = ["ping", "arp", "names", "snmp", "layout"];
     const frac = (t) => noClamp((t + PRE) / PRE);
     const o = {
-      title: this._shareTitle(hide), counts,
+      title: this._shareTitle(hide), counts, frame: shareFrame,
       pct: (t) => frac(t) * 100,
       found: (t) => total * noEase(frac(t)),
       phase: (t) => NO_SCAN_PHASE[phases[Math.min(phases.length - 1, Math.floor(frac(t) * phases.length))]],
@@ -1484,7 +1885,7 @@ class NetOrbitCard extends HTMLElement {
       try {
         canvas = document.createElement("canvas");
         canvas.width = 960;
-        canvas.height = Math.round((960 * NO_SHARE.h) / NO_SHARE.w / 2) * 2; // even, for H.264
+        canvas.height = Math.round((960 * shareFrame.H) / shareFrame.W / 2) * 2; // even, for H.264
         // Attached but invisible: a canvas that is not in the page can be throttled and stop feeding the stream.
         canvas.setAttribute("aria-hidden", "true");
         canvas.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
@@ -1712,6 +2113,9 @@ class NetOrbitCard extends HTMLElement {
       if (y + h > r.height) y -= h + 20;
       el.style.left = Math.max(4, x) + "px"; el.style.top = Math.max(4, y) + "px";
     };
+    // A long-press redraws the map under the finger, so the click that ends it may never reach a node to be
+    // swallowed. Any new press on the map means it's gone, so the next tap is a real one.
+    if (svg) svg.addEventListener("pointerdown", () => { this._pressed = 0; }, true);
     const toSvg = (ev) => {
       const pt = svg.createSVGPoint();
       pt.x = ev.clientX; pt.y = ev.clientY;
@@ -1741,9 +2145,11 @@ class NetOrbitCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".node[data-key]").forEach((el) => {
       const n = all[el.dataset.key];
       if (!n) return;
-      el.addEventListener("mouseenter", () => {
+      el.addEventListener("mouseenter", (ev) => {
         if (this._drag) return;
         tip.innerHTML = this._tipHtml(n, hubs, col);
+        // Placed now as well, for a map redrawn under a pointer that hasn't moved since.
+        place(tip, ev, 230, 170);
         tip.style.opacity = "1";
       });
       el.addEventListener("mousemove", (ev) => place(tip, ev, 230, 170));
@@ -1778,7 +2184,7 @@ class NetOrbitCard extends HTMLElement {
           d.moved = true;
           d.target = nearestTarget(toSvg(ev), d.n.key);
         }
-        ghost.setAttribute("cx", -500); ghost.setAttribute("cy", -500);
+        ghost.setAttribute("cx", NO_PARK); ghost.setAttribute("cy", NO_PARK);
         this.shadowRoot.querySelectorAll(".node.hot").forEach((x) => x.classList.remove("hot"));
         if (d.moved) {
           if (d.target && d.target.suggested) this._dropOnSuggestPopup(d.target, d.n, ev, wrap, place);
@@ -1789,9 +2195,37 @@ class NetOrbitCard extends HTMLElement {
         this._devicePopup(d.n, ev, wrap, place, hubs);
       };
       el.addEventListener("pointerup", finish);
-      el.addEventListener("pointercancel", (ev) => { if (this._drag) { this._drag = null; ghost.setAttribute("cx", -500); } });
+      el.addEventListener("pointercancel", (ev) => { if (this._drag) { this._drag = null; ghost.setAttribute("cx", NO_PARK); ghost.setAttribute("cy", NO_PARK); } });
+
+      // Long-press a hub with something below it to show just its branch, or the middle hub of a branch to go up a
+      // level. Not in Edit layout, where a hub is tapped for its menu.
+      // The grey hub above a branch, and the middle hub of a branch, go up; any other hub with something below it
+      // opens its branch.
+      const up = n.kind === "uphub" || (n.key === root && !!model.focus);
+      const branch = !!hubs[n.key] && (up || (n.key !== root && (devices.some((d) => d.link === n.key) || Object.values(hubs).some((h) => h.parent === n.key))));
+      if (branch) {
+        let press = null;
+        const cancel = () => { if (press) { clearTimeout(press.t); press = null; } };
+        el.addEventListener("pointerdown", (ev) => {
+          if (this._edit || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+          cancel();
+          press = { x0: ev.clientX, y0: ev.clientY, t: setTimeout(() => {
+            press = null;
+            this._pressed = Date.now();
+            tip.style.opacity = "0";
+            el.classList.add("drill");
+            this._drill(up ? "up" : n.key);
+          }, 550) };
+        });
+        el.addEventListener("pointermove", (ev) => { if (press && Math.hypot(ev.clientX - press.x0, ev.clientY - press.y0) > 8) cancel(); });
+        ["pointerup", "pointercancel", "pointerleave"].forEach((t) => el.addEventListener(t, cancel));
+        // A long touch would otherwise open the browser's own menu.
+        el.addEventListener("contextmenu", (ev) => { if (!this._edit) ev.preventDefault(); });
+      }
 
       el.addEventListener("click", (ev) => {
+        // The click that ends a long-press isn't a tap.
+        if (this._pressed && Date.now() - this._pressed < 1500) { this._pressed = 0; return; }
         if (this._edit && n.kind === "device") return; // handled by pointer events
         if (n.suggested && this._isAdmin()) { this._suggestPopup(n, ev, wrap, place); return; }
         if (n.kind === "new") { this._newPopup(n, ev, wrap, place); return; }
@@ -1810,8 +2244,11 @@ class NetOrbitCard extends HTMLElement {
     const svg = this.shadowRoot.querySelector("svg.map");
     const ctl = this.shadowRoot.querySelector(".zoomctl");
     if (!wrap || !svg) return;
+    const base = this._base || NO_VIEW;
+    // A bigger (balloon) map can zoom in further, to the same closest view as the radial map.
+    const zmax = NO_ZOOM_MAX * Math.max(1, base.w / NO_VIEW.w, base.h / NO_VIEW.h);
     const apply = () => {
-      const v = this._view || NO_VIEW;
+      const v = this._view || base;
       svg.setAttribute("viewBox", `${v.x.toFixed(1)} ${v.y.toFixed(1)} ${v.w.toFixed(1)} ${v.h.toFixed(1)}`);
       wrap.classList.toggle("zoomed", !!this._view);
       // Zoomed in (or placing devices) the map takes every touch. Otherwise one finger scrolls the page past the
@@ -1824,9 +2261,9 @@ class NetOrbitCard extends HTMLElement {
     const toMap = (x, y, inv) => { const pt = svg.createSVGPoint(); pt.x = x; pt.y = y; return pt.matrixTransform(inv); };
     const inverse = () => { const m = svg.getScreenCTM(); return m ? m.inverse() : null; };
     const zoomBy = (factor, at) => {
-      const v = this._view || NO_VIEW;
+      const v = this._view || base;
       const f = at || { x: v.x + v.w / 2, y: v.y + v.h / 2 };
-      this._view = netorbitZoomView(this._view, f, f, factor);
+      this._view = netorbitZoomView(this._view, f, f, factor, base, zmax);
       apply();
     };
     if (ctl) {
@@ -1891,7 +2328,7 @@ class NetOrbitCard extends HTMLElement {
       // and taking that capture over would end the pan, so only a mouse is captured here.
       if (!g.captured && ev.pointerType === "mouse") { g.captured = true; try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* pointer gone */ } }
       const factor = g.m.d && m.d ? m.d / g.m.d : 1;
-      this._view = netorbitZoomView(g.view, g.anchor, toMap(m.x, m.y, g.inv), factor);
+      this._view = netorbitZoomView(g.view, g.anchor, toMap(m.x, m.y, g.inv), factor, base, zmax);
       apply();
     });
     const end = (ev) => {
@@ -2226,5 +2663,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/the-scott-davis/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { netorbitLayout, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac };
+if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

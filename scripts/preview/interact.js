@@ -1129,6 +1129,82 @@ const BASE = (process.env.NETORBIT_PREVIEW || "http://localhost:8766").replace(/
     await rp.close();
   }
 
+  // 18. Balloon layout and branches: the Radial | Balloon switch (remembered), long-press a hub for its branch, the
+  //     grey hub above it and the row under the header lead back up, and Share follows the layout on show.
+  {
+    const bp = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    bp.on("pageerror", (e) => { console.error("PAGE ERROR", e.message); process.exitCode = 1; });
+    await bp.goto(BASE + "/scripts/preview/index.html?s=chain");
+    await bp.waitForFunction(() => window.ready);
+    const cb = bp.locator("netorbit-card");
+    const key = (l) => bp.evaluate((x) => Object.values(window.NETORBIT_SCENARIOS.chain).find((s) => s.attributes.label === x).attributes.node_key, l);
+    const crumbs = () => cb.locator(".crumbs").count().then((n) => (n ? cb.locator(".crumbs").innerText().then((t) => t.replace(/\s+/g, " ").trim()) : ""));
+    const press = async (label) => {
+      const b = await cb.locator(`.node[data-key="${await key(label)}"] circle.disc`).boundingBox();
+      await bp.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      await bp.mouse.down();
+      await bp.waitForTimeout(750);
+      await bp.mouse.up();
+      await bp.waitForTimeout(300);
+    };
+    const viewBox = () => cb.locator("svg.map").getAttribute("viewBox").then((v) => v.split(" ").map(Number).join(" "));
+    assert.ok(await cb.locator(".lay button[data-l=radial].on").count(), "radial by default");
+    assert.strictEqual(await viewBox(), "-70 -40 1140 1090");
+    await cb.locator(".lay button[data-l=balloon]").click();
+    assert.ok(await cb.locator(".lay button[data-l=balloon].on").count(), "balloon picked");
+    assert.notStrictEqual(await viewBox(), "-70 -40 1140 1090", "the balloon map has a view of its own");
+    assert.strictEqual(await cb.locator(".ring").count(), 0, "no router ring on the balloon map");
+    const saved = () => bp.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("netorbit-layout")).map((k) => [k, localStorage.getItem(k)]));
+    const picks = await saved();
+    assert.strictEqual(picks.length, 1, "one saved pick");
+    assert.ok(picks[0][0] !== "netorbit-layout" && picks[0][1] === "balloon", "remembered for this card, not site-wide");
+    // Reloaded, the same card remembers it.
+    await bp.reload();
+    await bp.waitForFunction(() => window.ready);
+    assert.ok(await cb.locator(".lay button[data-l=balloon].on").count(), "balloon remembered after a reload");
+    // The drag ghost waits off the map, which in the balloon layout runs into negative coordinates.
+    const ghost = await cb.locator(".ghost").evaluate((g) => [Number(g.getAttribute("cx")), Number(g.getAttribute("cy"))]);
+    const [vx, vy] = (await viewBox()).split(" ").map(Number);
+    assert.ok(ghost[0] < vx && ghost[1] < vy, "drag ghost off the map");
+    // Share follows the layout on show.
+    const share = await bp.evaluate(() => document.querySelector("netorbit-card").shareSvg(true));
+    assert.ok(!share.includes('class="ring"') && !share.includes('viewBox="-70 -40 1140 1090"'), "the share image is the balloon map");
+    // Long-press a hub: just its branch, with the hub above it in grey.
+    await press("Rack Switch");
+    assert.strictEqual(await crumbs(), "Whole map Router › Rack Switch");
+    assert.ok(await cb.locator(`.node.up[data-key="${await key("Router")}"]`).count(), "the router hangs off the branch in grey");
+    assert.strictEqual(await cb.locator(`.node[data-key="${await key("Downstairs AP")}"]`).count(), 0, "other branches left out");
+    assert.strictEqual(await bp.evaluate(() => (window.calls || []).length), 0, "a long-press opens nothing");
+    await press("Shed Switch");
+    assert.strictEqual(await crumbs(), "Whole map Router › Rack Switch › Shed Switch");
+    // The tap straight after a long-press is a real tap: it opens the device, not swallowed by the press before it.
+    await bp.evaluate(() => { window.moreInfo = null; document.addEventListener("hass-more-info", (e) => (window.moreInfo = e.detail.entityId)); });
+    await cb.locator(`.node[data-key="${await key("Shed Pi")}"] circle.disc`).click();
+    assert.ok(await bp.evaluate(() => window.moreInfo), "a tap right after a long-press opens the device");
+    // Long-press the grey hub to go up a level; the row under the header goes back to the whole map.
+    await press("Rack Switch");
+    assert.strictEqual(await crumbs(), "Whole map Router › Rack Switch");
+    await cb.locator(".crumbs .cr.back").click();
+    assert.strictEqual(await crumbs(), "", "whole map again");
+    // The radial map has branches too.
+    await cb.locator(".lay button[data-l=radial]").click();
+    await press("Shed Switch");
+    assert.strictEqual(await crumbs(), "Whole map Router › Rack Switch › Shed Switch");
+    assert.strictEqual(await viewBox(), "-70 -40 1140 1090");
+    await cb.locator(".lay button[data-l=balloon]").click();
+    // Another card, set to radial with no switch, stays radial whatever was picked on the first one.
+    await bp.goto(BASE + "/scripts/preview/index.html?s=chain&cfg=" + encodeURIComponent(JSON.stringify({ layout: "radial", layout_toggle: false })));
+    await bp.waitForFunction(() => window.ready);
+    assert.strictEqual(await cb.locator(".lay").count(), 0, "no switch");
+    assert.strictEqual(await viewBox(), "-70 -40 1140 1090", "the card's own layout wins");
+    // A card whose `layout` changes starts from it, not from a pick made before.
+    await bp.goto(BASE + "/scripts/preview/index.html?s=chain&cfg=" + encodeURIComponent(JSON.stringify({ layout: "balloon" })));
+    await bp.waitForFunction(() => window.ready);
+    assert.ok(await cb.locator(".lay button[data-l=balloon].on").count(), "layout: balloon shows balloon");
+    console.log("balloon layout and branches ok");
+    await bp.close();
+  }
+
   await browser.close();
   console.log("ALL INTERACTIONS PASSED");
 })().catch((e) => { console.error(e); process.exit(1); });

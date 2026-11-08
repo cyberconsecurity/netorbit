@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Balloon layout.** A Radial | Balloon switch in the card header. In the balloon layout every hub sits in the middle of its own ring of devices, and hubs below it branch away from it, each with room for everything under it. A chain of switches (one feeding the next) becomes a line of hubs instead of piling up beside the router, busy access points get a circle each, and the map is turned to fill the card's width. The card option `layout: balloon` makes it the card's layout, and `layout_toggle: false` hides the switch, so the card always shows its `layout`. A pick in the switch is remembered in that browser for that card only, and editing the card's options starts it again from its `layout`. The radial map is unchanged and stays the default. Share (image and video) uses whichever layout is on show; a balloon share gets a frame of the map's own shape (thanks @ninchistudios, #66).
+- **Show one branch on its own.** Long-press a hub with something below it to see just that hub, the hubs under it and their devices, in either layout. The hub above the branch hangs off it in grey ("Up a level"): long-press it, or the middle hub, to go up a level. A row under the header also leads back up (Whole map, or any hub on the way). The counts in the header are for the branch on show (thanks @ninchistudios, #66).
+
+### Fixed
+- A tooltip shown on a map redrawn under the mouse now appears next to the pointer, not in the corner of the card (thanks @ninchistudios, #66).
+
 ## 0.3.1
 
 ### Changed

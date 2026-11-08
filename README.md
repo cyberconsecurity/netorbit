@@ -231,8 +231,10 @@ SNMP is how managed switches share their MAC address tables. NetOrbit only ever 
 | `zoom` | `true` | Pinch, double-tap, Ctrl/Cmd+scroll or the + and − buttons zoom the map; drag to look around while zoomed in. `false` for a fixed map. |
 | `device_id` | | Only show one NetOrbit entry when you have several. |
 | `show_share` | `true` | Show the Share button (image or video of the map, with names hidden by default and no addresses). |
+| `layout` | `radial` | `radial`: every device on one ring round the router. `balloon`: each hub in the middle of its own ring of devices, with the hubs below it branching away (good for chains of switches and busy access points). A pick in the header's Radial \| Balloon switch overrides this for that card in that browser, until the card's options are edited. |
+| `layout_toggle` | `true` | Show the Radial \| Balloon switch in the header. With `false` the card always shows its `layout`. |
 
-Hover a device for details, tap it for its history. Pinch or double-tap to zoom in on a busy part of the map (Ctrl/Cmd+scroll with a mouse, or the + and − buttons), drag to look around, and zoom out again to scroll the page past the map. Admins get an **Edit layout** button. Everyone gets **Share**: a PNG to download or copy, or a 7 second video of the scan animation (mp4 where the browser can record it, otherwise webm). The video option only shows up in browsers that can record a canvas, and Copy only where the browser can put images on the clipboard.
+Hover a device for details, tap it for its history. **Long-press a hub** to show just its branch (the hubs and devices below it). The hub above shows in grey: long-press it to go up a level, or use the row under the header to go back up. Pinch or double-tap to zoom in on a busy part of the map (Ctrl/Cmd+scroll with a mouse, or the + and − buttons), drag to look around, and zoom out again to scroll the page past the map. Admins get an **Edit layout** button. Everyone gets **Share**: a PNG to download or copy, or a 7 second video of the scan animation (mp4 where the browser can record it, otherwise webm). The video option only shows up in browsers that can record a canvas, and Copy only where the browser can put images on the clipboard.
 
 <p align="right"><sub><a href="#netorbit">back to the map</a></sub></p>
 

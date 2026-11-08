@@ -6,7 +6,7 @@ globalThis.HTMLElement = class {};
 globalThis.customElements = { get: () => undefined, define: () => {} };
 globalThis.window = globalThis;
 console.info = () => {};
-const { netorbitLayout, noPrivateMac } = require("../custom_components/netorbit/frontend/netorbit-card.js");
+const { netorbitLayout, netorbitBalloonLayout, netorbitFocus, netorbitDraw, noPrivateMac } = require("../custom_components/netorbit/frontend/netorbit-card.js");
 
 function model(hubDefs, devCounts) {
   const hubs = {};
@@ -63,6 +63,130 @@ test("large networks stagger device rings", () => {
   const L = netorbitLayout(m);
   const radii = new Set(m.devices.map((d) => Math.round(L.pos[d.key].r)));
   assert.strictEqual(radii.size, 2);
+});
+
+// ---------------------------------------------------------------- balloon layout and branches
+
+// A chain of switches, each feeding the next, plus two busy access points off the router.
+function chain() {
+  return model(
+    [["r", null], ["ap1", "r"], ["ap2", "r"], ["s1", "r"], ["s2", "s1"], ["s3", "s2"], ["s4", "s3"], ["s5", "s4"], ["ap3", "s5"], ["side", "s1"]],
+    { ap1: 16, ap2: 10, s1: 3, s2: 1, s3: 1, s4: 1, s5: 1, ap3: 6, side: 2 }
+  );
+}
+
+test("balloon: every hub and device gets a position, each device on a ring round its own hub", () => {
+  const m = chain();
+  const L = netorbitBalloonLayout(m);
+  for (const k of Object.keys(m.hubs)) assert.ok(L.pos[k], k);
+  for (const d of m.devices) {
+    const p = L.pos[d.key], h = L.pos[d.link];
+    assert.ok(p, d.key);
+    assert.strictEqual(p.hub, d.link);
+    assert.ok(Math.abs(p.ox - h.x) < 0.05 && Math.abs(p.oy - h.y) < 0.05, `${d.key} ring centre is its hub`);
+    assert.ok(Math.abs(dist(p, h) - p.r) < 0.5, `${d.key} sits on its ring`);
+  }
+});
+
+test("balloon: nothing overlaps, across branches too", () => {
+  const m = chain();
+  const L = netorbitBalloonLayout(m);
+  const devs = m.devices.map((d) => L.pos[d.key]);
+  const hubs = Object.keys(m.hubs).map((k) => L.pos[k]);
+  for (let i = 0; i < devs.length; i++) for (let j = i + 1; j < devs.length; j++) assert.ok(dist(devs[i], devs[j]) > 30, `devices ${i} and ${j}`);
+  for (let i = 0; i < hubs.length; i++) for (let j = i + 1; j < hubs.length; j++) assert.ok(dist(hubs[i], hubs[j]) > 70, `hubs ${i} and ${j}`);
+  for (const d of devs) for (const h of hubs) assert.ok(dist(d, h) > 45, "device clear of every hub");
+});
+
+test("balloon: branches pulled in towards the middle still never overlap, in a large random network", () => {
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const defs = [["r", null]];
+  const counts = { r: 3 };
+  for (let i = 0; i < 18; i++) { defs.push([`h${i}`, i < 4 ? "r" : `h${Math.floor(rnd() * i)}`]); counts[`h${i}`] = Math.floor(rnd() * 12); }
+  const m = model(defs, counts);
+  const L = netorbitBalloonLayout(m);
+  const devs = m.devices.map((d) => L.pos[d.key]);
+  const hubs = Object.keys(m.hubs).map((k) => L.pos[k]);
+  for (let i = 0; i < devs.length; i++) for (let j = i + 1; j < devs.length; j++) assert.ok(dist(devs[i], devs[j]) > 30, `devices ${i} and ${j}`);
+  for (let i = 0; i < hubs.length; i++) for (let j = i + 1; j < hubs.length; j++) assert.ok(dist(hubs[i], hubs[j]) > 70, `hubs ${i} and ${j}`);
+  for (const d of devs) for (const h of hubs) assert.ok(dist(d, h) > 45, "device clear of every hub");
+});
+
+test("balloon: a chain of switches grows a step at a time, not doubling", () => {
+  const steps = (n) => {
+    const defs = [["r", null]];
+    const counts = {};
+    for (let i = 1; i <= n; i++) { defs.push([`s${i}`, i === 1 ? "r" : `s${i - 1}`]); counts[`s${i}`] = 1; }
+    const L = netorbitBalloonLayout(model(defs, counts));
+    for (let i = 2; i <= n; i++) assert.ok(dist(L.pos[`s${i}`], L.pos[`s${i - 1}`]) < 400, `step ${i}`);
+    return Math.max(L.view.w, L.view.h);
+  };
+  // Twice the switches makes a map roughly twice as long, not many times longer.
+  assert.ok(steps(8) < steps(4) * 2.6);
+});
+
+test("balloon: the view holds everything and has the card's shape", () => {
+  for (const aspect of [0.8, 1.5, 2.2]) {
+    const m = chain();
+    const L = netorbitBalloonLayout(m, { aspect });
+    const v = L.view;
+    assert.ok(v.w / v.h >= aspect - 0.01, `aspect ${aspect}`);
+    for (const p of Object.values(L.pos)) assert.ok(p.x > v.x && p.x < v.x + v.w && p.y > v.y && p.y < v.y + v.h);
+  }
+});
+
+test("balloon: unknown parents, loops, a big access point and a bare router all work", () => {
+  const m = model([["r", null], ["x", "missing"], ["y", "z"], ["z", "y"], ["big", "r"]], { x: 1, y: 1, z: 1, big: 120 });
+  m.devices.push({ key: "orphan", link: "nowhere", label: "orphan" });
+  const L = netorbitBalloonLayout(m);
+  for (const k of ["x", "y", "z", "big", "orphan"]) assert.ok(L.pos[k], k);
+  const big = m.devices.filter((d) => d.link === "big").map((d) => L.pos[d.key]);
+  for (let i = 1; i < big.length; i++) assert.ok(dist(big[i], big[i - 1]) > 30);
+  const bare = netorbitBalloonLayout(model([["r", null]], {}));
+  assert.ok(bare.pos.r && bare.view.w > 0);
+});
+
+test("balloon: drawn labels run out from the device's own hub", () => {
+  const m = chain();
+  const D = netorbitDraw(m, {}, { layout: "balloon" });
+  assert.ok(D.view, "the balloon map says what part of the map to show");
+  for (const l of D.scene.devLabels) {
+    const d = m.devices.find((x) => x.key === l.k);
+    const hub = D.pos[d.link], dev = D.pos[d.key];
+    assert.ok(dist(l, hub) > dist(dev, hub), `${d.key} label beyond its device`);
+  }
+  assert.strictEqual(netorbitDraw(m, {}, {}).view, null, "the radial map keeps its fixed view");
+});
+
+test("a branch on its own: the hub becomes the middle, with only what is below it", () => {
+  const m = chain();
+  m.internet = { key: "internet", status: "online" };
+  const f = netorbitFocus(m, "s2");
+  assert.strictEqual(f.root, "s2");
+  assert.strictEqual(f.hubs.s2.parent, null);
+  // The branch, plus the hub above it as the way back up: hanging off the middle hub, without its own devices.
+  assert.deepStrictEqual(Object.keys(f.hubs).sort(), ["ap3", "s1", "s2", "s3", "s4", "s5"]);
+  assert.strictEqual(f.hubs.s1.kind, "uphub");
+  assert.strictEqual(f.hubs.s1.parent, "s2");
+  assert.strictEqual(f.up, "s1");
+  assert.ok(f.devices.every((d) => f.hubs[d.link] && d.link !== "s1"));
+  assert.strictEqual(f.devices.length, 1 + 1 + 1 + 1 + 6);
+  assert.deepStrictEqual(f.path, ["r", "s1", "s2"]);
+  // A branch straight off the router has the router as its way up.
+  const top = netorbitFocus(m, "s1");
+  assert.strictEqual(top.hubs.r.kind, "uphub");
+  assert.strictEqual(top.up, "r");
+  assert.strictEqual(m.hubs.r.kind, undefined, "the whole map's hubs are copied, not changed");
+  assert.strictEqual(f.internet, null);
+  assert.strictEqual(m.hubs.s2.parent, "s1", "the whole map is left as it was");
+  // The root, or a hub that isn't there, is the whole map.
+  assert.strictEqual(netorbitFocus(m, "r"), m);
+  assert.strictEqual(netorbitFocus(m, "gone"), m);
+  assert.strictEqual(netorbitFocus(m, null), m);
+  // Both layouts draw a branch.
+  assert.ok(netorbitBalloonLayout(f).pos.ap3);
+  assert.ok(netorbitLayout(f).pos.ap3);
 });
 
 test("devices are grouped by type from their icon", () => {
@@ -269,6 +393,21 @@ test("with names shown, labels stay but addresses still never do", () => {
   assert.ok(svg.includes("Living Room TV"));
 });
 
+test("the share image follows the layout on show: radial keeps its frame, balloon gets its own", () => {
+  const m = card.shareModel(richModel());
+  const size = (svg) => svg.match(/^<svg[^>]* width="(\d+)" height="(\d+)"/).slice(1).map(Number);
+  const radial = card.netorbitShareSvg(m, m.title);
+  assert.deepStrictEqual(size(radial), [1140, 1220]);
+  assert.ok(radial.includes('viewBox="-70 -40 1140 1090"') && radial.includes('class="ring"'));
+  const balloon = card.netorbitShareSvg(m, m.title, "balloon");
+  const [w, h] = size(balloon);
+  assert.ok(w >= 1140 && w <= 1600 && h > 0);
+  assert.ok(!balloon.includes('class="ring"'), "no router ring on a balloon map");
+  const view = card.netorbitDraw(m, { show_ip: false }, { layout: "balloon", aspect: 1.4 }).view;
+  assert.ok(balloon.includes(`viewBox="${view.x} ${view.y} ${view.w} ${view.h}"`), "the map is the balloon map");
+  assertSafe(balloon, "balloon share SVG");
+});
+
 test("the reveal pops nodes in the order the beam passes them", () => {
   const { netorbitRevealNode, netorbitRevealGlobal } = card;
   const top = netorbitRevealNode(0.4, 0.1), left = netorbitRevealNode(0.4, 1.5 * Math.PI);
@@ -404,4 +543,64 @@ test("stop() ends the pump and clears its timer", () => {
   assert.strictEqual(n, 5);
   assert.strictEqual(finished, 0);
   assert.strictEqual(clk.q.length, 0);
+});
+
+// ---------------------------------------------------------------- the layout a card shows
+
+function layoutCard(config, path, store) {
+  globalThis.localStorage = store;
+  globalThis.location = { pathname: path };
+  const c = new card.NetOrbitCard();
+  c.shadowRoot = {};
+  Object.defineProperty(c, "hass", { set() {}, configurable: true }); // _setLayout redraws; nothing to draw here
+  c.setConfig(config);
+  return c;
+}
+
+function memStore() {
+  const m = {};
+  return { getItem: (k) => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = String(v); }, keys: () => Object.keys(m) };
+}
+
+test("a layout picked on one card stays on that card", () => {
+  const store = memStore();
+  const a = layoutCard({ title: "Network" }, "/lovelace/net", store);
+  a._setLayout("balloon");
+  assert.strictEqual(a._layoutName(), "balloon");
+  assert.deepStrictEqual(store.keys(), [card.noLayoutKey({ title: "Network" }, "/lovelace/net")]);
+  assert.ok(!store.keys().includes("netorbit-layout"), "no site-wide key");
+  // The same card again (a reload) remembers it.
+  assert.strictEqual(layoutCard({ title: "Network" }, "/lovelace/net", store)._layoutName(), "balloon");
+  // Another card, or the same card on another view, starts from its own config.
+  assert.strictEqual(layoutCard({ title: "Upstairs" }, "/lovelace/net", store)._layoutName(), "radial");
+  assert.strictEqual(layoutCard({ title: "Network" }, "/lovelace/other", store)._layoutName(), "radial");
+});
+
+test("with the switch hidden, the card's layout option always wins", () => {
+  const store = memStore();
+  const cfg = { title: "Network", layout: "radial", layout_toggle: false };
+  store.setItem(card.noLayoutKey(cfg, "/lovelace/net"), "balloon");
+  const c = layoutCard(cfg, "/lovelace/net", store);
+  assert.strictEqual(c._layoutName(), "radial");
+  c._layoutOverride = "balloon"; // left over from before the switch was hidden
+  assert.strictEqual(c._layoutName(), "radial");
+  assert.strictEqual(layoutCard({ layout: "balloon", layout_toggle: false }, "/", memStore())._layoutName(), "balloon");
+});
+
+test("editing the card's layout option takes effect over an earlier pick", () => {
+  const store = memStore();
+  const c = layoutCard({ title: "Network" }, "/lovelace/net", store);
+  c._setLayout("balloon");
+  c.setConfig({ title: "Network", layout: "radial" });
+  assert.strictEqual(c._layoutName(), "radial", "a new config starts from its own layout");
+  c.setConfig({ title: "Network", layout: "balloon" });
+  assert.strictEqual(c._layoutName(), "balloon");
+});
+
+test("blocked storage falls back to the card's option, and a pick still works on show", () => {
+  const blocked = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } };
+  const c = layoutCard({ layout: "balloon" }, "/", blocked);
+  assert.strictEqual(c._layoutName(), "balloon");
+  c._setLayout("radial");
+  assert.strictEqual(c._layoutName(), "radial");
 });

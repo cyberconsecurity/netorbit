@@ -105,6 +105,28 @@
        "Device 4B:12:mdi:lan-connect", "Device 7C:01:mdi:lan-connect"]
         .forEach((s) => { const parts = s.split(":"); const ic = parts.slice(-2).join(":"); const l = parts.slice(0, -2).join(":"); dev(l, ic, "gateway", "online", false, "none"); });
     }), [], [["Shed AP", "access_point", ["its name looks like an access point"]]]),
+    // A chain of switches (one feeding the next) with busy access points: the case the balloon layout is for.
+    chain: summary(build((hub, dev) => {
+      hub("gateway", "Router", "router", null);
+      hub("ap1", "Downstairs AP", "access_point", "gateway");
+      hub("ap2", "Kitchen AP", "access_point", "gateway");
+      hub("rack", "Rack Switch", "switch", "gateway");
+      hub("garage", "Garage Switch", "switch", "rack");
+      hub("shed", "Shed Switch", "switch", "rack");
+      hub("bed", "Bedroom Switch", "switch", "shed");
+      hub("ap3", "Upstairs AP", "access_point", "bed");
+      const add = (parent, list, sick) => list.forEach((s, i) => { const [l, ...ic] = s.split(":"); dev(l, ic.join(":"), parent, sick && sick.includes(i) ? "stale" : "online"); });
+      add("ap1", ["Lounge Lamp:mdi:lightbulb", "Lounge TV:mdi:television", "Soundbar:mdi:soundbar", "Desk Lamp:mdi:lightbulb", "Patio Cam:mdi:cctv", "Bar Strip:mdi:power-socket-us",
+        "Kitchen Cam:mdi:cctv", "Sparkles Plug:mdi:power-socket-us", "Heat Pads:mdi:power-socket-us", "Chargers Plug:mdi:power-socket-us", "Bathroom Bulb:mdi:lightbulb",
+        "Bedside Bulb:mdi:lightbulb", "Garage Cam:mdi:cctv", "Rack Fans Plug:mdi:fan", "Robot Vac:mdi:robot-vacuum", "Thermostat:mdi:thermostat"], [10]);
+      add("ap2", ["Kindle:mdi:book-open-variant", "Printer 3D:mdi:printer-3d", "Lounge Streamer:mdi:cast", "Laptop Work:mdi:laptop", "Laptop Home:mdi:laptop", "Old Tablet:mdi:tablet",
+        "Phone Pixel:mdi:cellphone", "Headset:mdi:virtual-reality", "Upstairs Streamer:mdi:cast", "Snug TV:mdi:television"], [9]);
+      add("rack", ["Server:mdi:server", "Workstation:mdi:monitor", "Print Pi:mdi:raspberry-pi"]);
+      add("garage", ["Inverter:mdi:solar-power", "Meter:mdi:meter-electric"]);
+      add("shed", ["Shed Pi:mdi:raspberry-pi"]);
+      add("bed", ["Gaming PC:mdi:monitor"]);
+      add("ap3", ["Phone A:mdi:cellphone", "Phone B:mdi:cellphone", "Tablet:mdi:tablet", "Laptop A:mdi:laptop", "Laptop B:mdi:laptop", "Phone C:mdi:cellphone"]);
+    }), ["Device 3A:91"]),
     novice: summary(build((hub, dev) => {
       hub("gateway", "Router", "router", null);
       hub("m1", "Mesh Node 2", "mesh_node", "gateway");
