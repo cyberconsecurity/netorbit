@@ -89,7 +89,7 @@ from .logic import (
 )
 from .snmp import SnmpClient, is_grandstream
 from .mdns import mdns_label, mdns_name
-from .sources import client_access_points, ping_names_by_ip, registry_by_mac, ssdp_types_by_ip, tracker_names_by_mac
+from .sources import client_access_points, ping_names_by_ip, registry_by_mac, ssdp_types_by_ip, tracker_names_by_mac, unifi_network
 from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
@@ -216,6 +216,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._port_info: dict[str, dict[int, Any]] = {}  # switch hub id -> {bridge port: PortInfo}
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
+        self._controller_ips: dict[str, str] = {}  # network device mac -> IP, from the UniFi integration
         self._ap_clients: dict[str, str] = {}  # client MAC -> hub id, from the AP's own SNMP client table
         self._suggestions: list[dict[str, Any]] = []
         self._community_asked: set[str] = set()  # IPs already asked with the custom SNMP community
@@ -352,6 +353,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             if ip:
                 rec["ip"] = ip
         self._controller_ap = client_access_points(self.hass)
+        self._controller_ips = unifi_network(self.hass)[1]
         self._save()
         self._alive_keys = {k for k, _ in alive}
         data = self._build(now, self._alive_keys)
@@ -778,7 +780,16 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             if hmac == mac:
                 return hub_id
         near = [hub_id for hub_id, hmac in hubs.items() if macs_close(hmac, mac)]
-        return near[0] if len(near) == 1 else None
+        if len(near) == 1:
+            return near[0]
+        # The MAC NetOrbit learned for a hub can differ from the one the controller reports (Home Assistant on another
+        # VLAN learns the router's MAC for it, or none). The controller also knows each AP's IP: match on that.
+        ip = self._controller_ips.get(mac)
+        if ip:
+            for hub in self.opts[CONF_HUBS]:
+                if hub.get("host") == ip:
+                    return hub["id"]
+        return None
 
     async def _detect_hubs(self) -> None:
         """Add obvious hubs, and collect less certain ones as suggestions."""

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.2 (cyberconsecurity fork)
+
+### Fixed
+- **Wireless devices land under the right UniFi access point.** NetOrbit now also reads the UniFi Network integration's own client list, so it knows which AP every wireless client is on even though Home Assistant creates most UniFi client trackers disabled. This matters most when several APs share a switch port (behind a Flex Mini, or a wireless bridge), where the MAC table can't tell their clients apart. An AP whose MAC NetOrbit learned differently from the controller's (Home Assistant on another VLAN) is matched by its IP instead. Read only: nothing is sent to the controller.
+
 ## 2026.11.1 (cyberconsecurity fork)
 
 ### Fixed

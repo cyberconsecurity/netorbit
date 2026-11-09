@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .detect import NETWORK_DOMAINS
 from .logic import normalize_mac, ping_label, useful_name
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -120,8 +125,12 @@ def client_access_points(hass: HomeAssistant) -> dict[str, str]:
 
     * Any device_tracker exposing ``mac`` and ``ap_mac`` attributes (UniFi does).
     * Netgear's per-device ``conn_ap_mac`` sensors (Orbi and other mesh routers).
+    * The UniFi Network integration's own client list, for clients whose tracker entity is disabled. Home
+      Assistant creates those disabled unless the client is already a known device, so on most networks the
+      entities above cover only a few clients.
     """
     out: dict[str, str] = {}
+    unifi_aps, _ = unifi_network(hass)
     for state in hass.states.async_all("device_tracker"):
         ap = normalize_mac(state.attributes.get("ap_mac"))
         mac = normalize_mac(state.attributes.get("mac"))
@@ -144,6 +153,60 @@ def client_access_points(hass: HomeAssistant) -> dict[str, str]:
             mac = normalize_mac(value) if kind == dr.CONNECTION_NETWORK_MAC else None
             if mac:
                 out[mac] = ap
+    for mac, ap in unifi_aps.items():
+        out.setdefault(mac, ap)
+    return out
+
+
+# A client the controller hasn't heard from in this long is treated as gone, as UniFi's own trackers do by default.
+UNIFI_CLIENT_FRESH = 300
+
+
+def unifi_network(hass: HomeAssistant, now: float | None = None) -> tuple[dict[str, str], dict[str, str]]:
+    """({wireless client mac: AP mac}, {network device mac: IP}) read straight from the UniFi Network integration.
+
+    Read only, from what the integration already holds in memory; nothing is sent to the controller. Any change in
+    the integration's internals just leaves both maps empty, so NetOrbit falls back to the switch tables.
+    """
+    aps: dict[str, str] = {}
+    ips: dict[str, str] = {}
+    now = time.time() if now is None else now
+    try:
+        entries = hass.config_entries.async_entries("unifi")
+    except Exception:  # noqa: BLE001
+        return aps, ips
+    for entry in entries:
+        api = getattr(getattr(entry, "runtime_data", None), "api", None)
+        if api is None:
+            continue
+        try:
+            for raw in _unifi_raw(getattr(api, "clients", None)):
+                if raw.get("is_wired"):
+                    continue
+                seen = raw.get("last_seen")
+                if isinstance(seen, (int, float)) and now - seen > UNIFI_CLIENT_FRESH:
+                    continue
+                mac, ap = normalize_mac(raw.get("mac")), normalize_mac(raw.get("ap_mac"))
+                if mac and ap:
+                    aps[mac] = ap
+            for raw in _unifi_raw(getattr(api, "devices", None)):
+                mac, ip = normalize_mac(raw.get("mac")), raw.get("ip")
+                if mac and isinstance(ip, str) and ip:
+                    ips[mac] = ip
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("NetOrbit couldn't read the UniFi client list: %s", err)
+    return aps, ips
+
+
+def _unifi_raw(handler: Any) -> list[dict[str, Any]]:
+    """The raw dicts of a UniFi API handler (clients or devices)."""
+    if handler is None:
+        return []
+    out = []
+    for key in list(handler):
+        raw = getattr(handler[key], "raw", None)
+        if isinstance(raw, dict):
+            out.append(raw)
     return out
 
 
