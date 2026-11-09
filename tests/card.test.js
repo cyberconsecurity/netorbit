@@ -947,3 +947,28 @@ test("the separation pass keeps a moved device's label angle in step with where 
   assert.deepStrictEqual([fixed.r.x, fixed.r.y], [0, 0]);
   assert.ok(Math.hypot(fixed.d.x, fixed.d.y) >= 53 - 0.01);
 });
+
+test("a core switch with 60 devices and 17 hubs below it stays compact in every layout", () => {
+  const hubs = [["r", null], ["sw", "r"]];
+  for (let i = 0; i < 17; i++) hubs.push([`h${i}`, "sw"]);
+  const m = model(hubs, { sw: 60, h2: 15 });
+  m.internet = { key: "internet", status: "online" };
+  for (const layout of ["radial", "balloon", "tree"]) {
+    const D = netorbitDraw(m, {}, { layout, aspect: 1.7 });
+    assertNoOverlap(m, D, `${layout} big switch`);
+  }
+  // Balloon: the switch's devices sit on a few close rings, not one huge one (that sent them ~1800 units out).
+  const B = NO.netorbitBalloonLayout(m, { aspect: 1.7 });
+  const far = Math.max(...m.devices.filter((d) => d.link === "sw").map((d) => Math.hypot(B.pos[d.key].x - B.pos.sw.x, B.pos[d.key].y - B.pos.sw.y)));
+  assert.ok(far < 650, `balloon devices within reach of their switch (furthest ${far.toFixed(0)})`);
+  // Tree: the 17 hubs wrap onto rows, and the switch's devices spread wide instead of a tall column.
+  const T = NO.netorbitTreeLayout(m, { aspect: 1.7 });
+  const rows = new Set(hubs.slice(2).map(([k]) => T.pos[k].y));
+  assert.ok(rows.size >= 2, "hubs wrap onto more than one row");
+  assert.ok(T.view.w < 2600, `tree view stays about a card wide (${T.view.w.toFixed(0)})`);
+  const swRows = new Set(m.devices.filter((d) => d.link === "sw").map((d) => T.pos[d.key].y));
+  assert.ok(swRows.size <= 8, `switch devices in a wide grid (${swRows.size} rows)`);
+  // The line down to the later rows runs in a lane no device sits in.
+  const x = T.pos.sw.x;
+  for (const d of m.devices.filter((d) => d.link !== "sw")) assert.ok(Math.abs(T.pos[d.key].x - x) >= 15 + 10, `${d.key} clear of the trunk`);
+});

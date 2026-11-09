@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.11.1 (cyberconsecurity fork)
+
+### Fixed
+- **Busy hubs in the Balloon layout.** A hub with more devices than fit round it (60 on a core switch with hubs below it) now puts them on up to four close rings instead of one huge one that sent them across the card.
+- **Busy hubs in the Tree layout.** A hub with many hubs below it wraps them onto rows about a card wide, with a clear lane for the line down, and its own devices spread into a wide grid instead of a tall column.
+
 ## 2026.11.0 (cyberconsecurity fork)
 
 ### Changed

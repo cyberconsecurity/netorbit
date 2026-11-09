@@ -75,6 +75,23 @@
     // The first scan has finished.
     done: scanning(summary(build(full), []), { scanning: false, scan_phase: null, scan_progress: 100, found: 33, first_scan_done: true }),
 
+    // One core switch carrying most of the network: 60 devices of its own and 17 hubs below it (APs behind
+    // unmanaged switches share its ports, so NetOrbit can't tell their clients apart). ?s=bigswitch
+    bigswitch: summary(build((hub, dev) => {
+      hub("gateway", "Router", "router", null);
+      hub("core", "Core Switch 24", "switch", "gateway");
+      const aps = ["AP-Basement", "AP-Den", "AP-Familyroom", "AP-Garage", "AP-Gate", "AP-Hottub", "AP-Workshop-Bridge"];
+      const sws = ["Camera-Backyard", "Switch Attic", "Switch Bedroom", "Switch Hot Tub", "Switch Driveway", "Switch Familyroom", "Switch Kaden", "Switch Kitchen", "Switch-Flex-HT", "Switch-Flex-Mini-Office", "Switch-24-G2"];
+      aps.forEach((l, i) => hub("ap" + i, l, "access_point", "core"));
+      sws.forEach((l, i) => hub("sw" + i, l, i === 0 ? "access_point" : "switch", "core"));
+      const kinds = ["Camera:mdi:cctv", "Plug:mdi:power-socket-us", "Echo:mdi:speaker", "Bulb:mdi:lightbulb", "Roku:mdi:television-play", "Sensor:mdi:thermometer"];
+      for (let i = 0; i < 60; i++) {
+        const [l, ...ic] = kinds[i % kinds.length].split(":");
+        dev(`${l}-${["Garage", "Utility", "Office", "Patio", "Kitchen", "Den", "Attic", "Porch", "Shop", "Hall"][i % 10]}-${i}`, ic.join(":"), "core", i % 9 === 4 ? "recent" : "online");
+      }
+      for (let i = 0; i < 15; i++) dev(`Familyroom-${i}`, "mdi:lightbulb", "ap2", i % 7 === 3 ? "recent" : "online");
+    }), []),
+
     mesh: summary(build((hub, dev) => {
       hub("gateway", "Mesh Router", "router", null);
       hub("m1", "Living Room Node", "mesh_node", "gateway");

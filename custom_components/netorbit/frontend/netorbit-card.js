@@ -2,7 +2,7 @@
  * Draws a live radial map from the NetOrbit integration's sensors.
  * https://github.com/the-scott-davis/netorbit  (MIT)
  */
-const NETORBIT_VERSION = "2026.11.0";
+const NETORBIT_VERSION = "2026.11.1";
 
 const NO_STATUS = {
   online: { color: "#34d399", label: "Online" },
@@ -289,7 +289,7 @@ function noGrid(discs) {
  * plus the centre each device's ring is drawn around (ox, oy) and the part of the map to show (view). The map is
  * turned to suit the card's shape (opts.aspect, width over height). Pure; exported for tests. */
 function netorbitBalloonLayout(model, opts) {
-  const o = Object.assign({ gap: 38, ring: 72, maxRing: 240, clear: 78, link: 110, pad: 16, back: 1.25, chars: 22, charW: 7, aspect: 1.5, margin: 34 }, opts || {});
+  const o = Object.assign({ gap: 38, ring: 72, maxRing: 240, maxTiers: 4, tierStep: 40, clear: 78, link: 110, pad: 16, back: 1.25, chars: 22, charW: 7, aspect: 1.5, margin: 34 }, opts || {});
   const { hubs, root, devices } = model;
   const kidsHub = {};
   const kidsDev = {};
@@ -343,6 +343,15 @@ function netorbitBalloonLayout(model, opts) {
     const minRing = h === root ? o.ring + 26 : o.ring;
     let ring = minRing;
     let far = 1;
+    // More devices than one ring of the widest size holds, even with the whole circle: they go on several close
+    // rings (tiers) instead of one huge one, each device a step further out than its neighbour.
+    let tiers = 1;
+    const tooMany = devs.length * o.gap > A * o.maxRing;
+    const inTiers = (room) => {
+      const r0 = Math.max(A * 0.25, room);
+      tiers = Math.min(o.maxTiers, Math.max(1, Math.ceil((devs.length * o.gap) / (r0 * o.maxRing))));
+      ring = Math.max(minRing, (devs.length * o.gap) / (tiers * r0));
+    };
     const kidNeed = (c) => wedge(c, near[c] * far).need;
     let kidsNeed = 0;
     for (let i = 0; i < 400; i++) {
@@ -351,24 +360,30 @@ function netorbitBalloonLayout(model, opts) {
       if (!devs.length) { if (room >= 0) break; }
       else {
         const want = room > 0 ? (devs.length * o.gap) / room : Infinity;
-        if (want <= o.maxRing || (!kids.length && want < Infinity)) { ring = Math.max(minRing, want); break; }
-        // A hub with more devices than fit on its widest ring, and hubs below it: pushing the branch further out
-        // stops helping long before 400 steps (which put it millions of units away and ran the page out of
-        // memory). Past four times out, give the devices a wider ring instead.
-        if (far > 4) { ring = Math.max(minRing, (devs.length * o.gap) / Math.max(A * 0.25, room)); break; }
+        if (want <= o.maxRing) { ring = Math.max(minRing, want); break; }
+        // Too many for one ring however far the child hubs go: once they leave half the circle (or straight away
+        // with none), the devices go on tiers of rings.
+        if (tooMany && (room >= A * 0.5 || !kids.length)) { inTiers(room); break; }
+        if (!kids.length && want < Infinity) { ring = Math.max(minRing, want); break; }
+        // Pushing a branch further out stops helping long before 400 steps (which put it millions of units away and
+        // ran the page out of memory). Past four times out, the devices go on tiers.
+        if (far > 4) { inTiers(room); break; }
       }
       far *= 1.04;
     }
-    const devNeed = devs.length ? (devs.length * o.gap) / ring : 0;
+    const devNeed = devs.length ? (devs.length * o.gap) / (ring * tiers) : 0;
     // Spare angle is shared out in proportion, so nothing bunches up at one end.
     const total = devNeed + kidsNeed;
     const stretch = total > 0 ? A / total : 1;
     const items = [];
     const half = Math.ceil(devs.length / 2);
     // Devices either side, child hubs in the middle: straight on, away from the parent.
-    devs.slice(0, half).forEach((d) => items.push({ d, need: (o.gap / ring) * stretch }));
+    const per = (o.gap / (ring * tiers)) * stretch;
+    let nth = 0;
+    const devItem = (d) => ({ d, need: per, rr: ring + (nth++ % tiers) * o.tierStep });
+    devs.slice(0, half).forEach((d) => items.push(devItem(d)));
     kids.forEach((c) => { const dist = near[c] * far; const w = wedge(c, dist); items.push({ c, dist, need: w.need * stretch, up: w.up, lo: w.lo }); });
-    devs.slice(half).forEach((d) => items.push({ d, need: (o.gap / ring) * stretch }));
+    devs.slice(half).forEach((d) => items.push(devItem(d)));
     // Angles in this hub's frame: round from just past the parent's direction (pi) to just before it again. A child
     // whose branch is lopsided is turned so the branch sits in the middle of its wedge.
     let at = h === root ? -Math.PI / 2 : Math.PI + o.back / 2;
@@ -376,9 +391,9 @@ function netorbitBalloonLayout(model, opts) {
     // What a device covers here: its disc, and its label as a row of small discs out to the end of the text.
     const devBits = (it) => {
       const cx = Math.cos(it.a), cy = Math.sin(it.a);
-      const out = [[ring * cx, ring * cy, 20]];
-      const end = ring + 24 + labLen(it.d);
-      for (let t = ring + 30; t < end + 7; t += 14) out.push([Math.min(t, end) * cx, Math.min(t, end) * cy, 8]);
+      const out = [[it.rr * cx, it.rr * cy, 20]];
+      const end = it.rr + 24 + labLen(it.d);
+      for (let t = it.rr + 30; t < end + 7; t += 14) out.push([Math.min(t, end) * cx, Math.min(t, end) * cy, 8]);
       return out;
     };
     // A child branch turned and moved to where it goes in this hub's frame.
@@ -442,7 +457,7 @@ function netorbitBalloonLayout(model, opts) {
     pos[h] = { x, y, a: turn, r: 0, depth: depth[h] };
     P.items.forEach((it) => {
       const a = turn + it.a;
-      if (it.d) pos[it.d.key] = { x: x + P.ring * Math.cos(a), y: y + P.ring * Math.sin(a), a, r: P.ring, ox: x, oy: y, hub: h };
+      if (it.d) pos[it.d.key] = { x: x + it.rr * Math.cos(a), y: y + it.rr * Math.sin(a), a, r: it.rr, ox: x, oy: y, hub: h };
       else place(it.c, x + it.dist * Math.cos(a), y + it.dist * Math.sin(a), a);
     });
   };
@@ -522,64 +537,88 @@ function netorbitTreeLayout(model, opts) {
   const R = 32; // every hub's centre sits as far below its level's top as the router's, so a level lines up
   const radius = (h) => (h === root ? 32 : hubs[h].kind === "group" ? 19 : 25);
   const labelW = (h) => Math.min(String(hubs[h].label == null ? "" : hubs[h].label).length, 26) * o.labW + 10;
-  // The device grid under a hub: narrow and tall, so a tree of several hubs still fits a card. With child hubs
-  // below, the grid splits either side of a clear gap for the line down to them.
-  const G = {};
-  const grid = (h) => {
+  // A hub with many hubs below it puts them on several rows, each no wider than about a card's worth, instead of
+  // one very long row. With more than one row, each row leaves a lane in the middle for the line down to the next.
+  const wrapW = Math.max(1000, 900 * o.aspect);
+  const lane = o.trunkGap;
+  const M = {};
+  const span = (c) => M[c].left + M[c].right;
+  const rowW = (a) => a.reduce((n, c) => n + span(c), 0) + Math.max(0, a.length - 1) * o.hubGap;
+  // The device grid under a hub: a few columns for a hub on its own; under a hub with hubs below it, as wide as the
+  // rows below (up to wrapW), so a busy switch doesn't become a tall tower. With hubs below, the grid splits either
+  // side of a clear gap for the line down to them.
+  const grid = (h, wide) => {
     const n = kidsDev[h].length;
     if (!n) return { cols: 0, rows: 0, h: 0, L: 0, gap: 0, left: 0, right: 0 };
-    const cols = Math.min(n, o.maxCols, Math.max(1, Math.ceil(Math.sqrt(n * 0.6))));
+    const kids = children[h].length > 0;
+    const base = Math.min(n, o.maxCols, Math.max(1, Math.ceil(Math.sqrt(n * 0.6))));
+    const cols = kids ? Math.min(n, Math.max(base, Math.floor((Math.min(wrapW, wide) - lane) / o.cellW))) : base;
     const rows = Math.ceil(n / cols);
-    if (!children[h].length) return { cols, rows, h: rows * o.cellH, L: 0, gap: 0, left: (cols * o.cellW) / 2, right: (cols * o.cellW) / 2 };
+    if (!kids) return { cols, rows, h: rows * o.cellH, L: 0, gap: 0, left: (cols * o.cellW) / 2, right: (cols * o.cellW) / 2 };
     const L = Math.floor(cols / 2);
-    return { cols, rows, h: rows * o.cellH, L, gap: o.trunkGap, left: o.trunkGap / 2 + L * o.cellW, right: o.trunkGap / 2 + (cols - L) * o.cellW };
+    return { cols, rows, h: rows * o.cellH, L, gap: lane, left: lane / 2 + L * o.cellW, right: lane / 2 + (cols - L) * o.cellW };
   };
-  // Each branch's room either side of its hub: its grid, its child branches (centred under it) and, on the right,
-  // the hub's label.
-  const left = {}, right = {};
-  const kidsW = (h) => children[h].reduce((n, c) => n + left[c] + right[c], 0) + Math.max(0, children[h].length - 1) * o.hubGap;
   const measure = (h) => {
     children[h].forEach(measure);
-    G[h] = grid(h);
-    const half = kidsW(h) / 2;
-    left[h] = Math.max(G[h].left, half, radius(h) + 14);
-    right[h] = Math.max(G[h].right, half, radius(h) + 14 + labelW(h));
+    const rows = [];
+    let cur = [];
+    children[h].forEach((c) => {
+      if (cur.length && rowW(cur) + o.hubGap + span(c) > wrapW) { rows.push(cur); cur = []; }
+      cur.push(c);
+    });
+    if (cur.length) rows.push(cur);
+    const multi = rows.length > 1;
+    const R2 = rows.map((r) => {
+      const hgt = Math.max.apply(null, r.map((c) => M[c].height));
+      if (!multi) return { L: r, R: [], split: false, lw: rowW(r) / 2, rw: rowW(r) / 2, h: hgt };
+      // Split the row about evenly by width either side of the lane.
+      const total = rowW(r);
+      let k = 0, acc = 0;
+      while (k < r.length && acc + span(r[k]) / 2 < total / 2) { acc += span(r[k]) + o.hubGap; k++; }
+      const Lr = r.slice(0, k), Rr = r.slice(k);
+      return { L: Lr, R: Rr, split: true, lw: rowW(Lr) + lane / 2, rw: rowW(Rr) + lane / 2, h: hgt };
+    });
+    const wide = R2.reduce((n, r) => Math.max(n, r.lw + r.rw), 0);
+    const g = grid(h, wide);
+    const own = 2 * R + (g.rows ? 30 + g.h : 0);
+    M[h] = {
+      g, rows: R2, own,
+      left: Math.max(g.left, radius(h) + 14, R2.reduce((n, r) => Math.max(n, r.lw), 0)),
+      right: Math.max(g.right, radius(h) + 14 + labelW(h), R2.reduce((n, r) => Math.max(n, r.rw), 0)),
+      height: own + R2.reduce((n, r) => n + o.levelGap + r.h, 0),
+    };
   };
   measure(root);
-  // Each level is as tall as its tallest hub plus device grid.
-  const levelH = {};
-  Object.keys(depth).forEach((h) => {
-    const d = depth[h];
-    levelH[d] = Math.max(levelH[d] || 0, 2 * R + (G[h].rows ? 30 + G[h].h : 0));
-  });
-  const levels = Object.keys(levelH).map(Number).sort((a, b) => a - b);
-  const levelY = {};
-  let y = 0;
-  levels.forEach((d) => { levelY[d] = y; y += levelH[d] + o.levelGap; });
 
   const pos = {};
-  const place = (h, x0) => {
-    const cx = x0 + left[h];
-    const cy = levelY[depth[h]] + R;
-    pos[h] = { x: cx, y: cy, a: Math.PI / 2, r: 0, depth: depth[h], tree: true, levelTop: levelY[depth[h]] };
-    const g = G[h];
-    const top = cy + R + 30;
+  const place = (h, cx, top, elbow) => {
+    const m = M[h], g = m.g;
+    const cy = top + R;
+    pos[h] = { x: cx, y: cy, a: Math.PI / 2, r: 0, depth: depth[h], tree: true };
+    if (elbow != null) pos[h].elbow = elbow;
+    const gtop = cy + R + 30;
     kidsDev[h].forEach((d, i) => {
       const col = i % g.cols, row = Math.floor(i / g.cols);
       const cellLeft = !g.gap ? cx - g.left + col * o.cellW
         : col < g.L ? cx - g.gap / 2 - (g.L - col) * o.cellW : cx + g.gap / 2 + (col - g.L) * o.cellW;
       pos[d.key] = {
-        x: cellLeft + o.cellW / 2, y: top + row * o.cellH + 16, a: Math.PI / 2, r: 0, hub: h, tree: true,
+        x: cellLeft + o.cellW / 2, y: gtop + row * o.cellH + 16, a: Math.PI / 2, r: 0, hub: h, tree: true,
         // The device's line: down from the hub to a bus, along it to this column's gutter, down, then in.
         bus: { y: cy + R + 14, gutter: cellLeft + 4 },
       };
     });
-    let x = cx - kidsW(h) / 2;
-    children[h].forEach((c) => { place(c, x); x += left[c] + right[c] + o.hubGap; });
+    let y = top + m.own + o.levelGap;
+    m.rows.forEach((r) => {
+      // The line from the parent turns halfway down the gap above the row.
+      const turn = y - o.levelGap / 2;
+      let x = r.split ? cx - lane / 2 - rowW(r.L) : cx - r.lw;
+      r.L.forEach((c) => { place(c, x + M[c].left, y, turn); x += span(c) + o.hubGap; });
+      x = cx + lane / 2;
+      r.R.forEach((c) => { place(c, x + M[c].left, y, turn); x += span(c) + o.hubGap; });
+      y += r.h + o.levelGap;
+    });
   };
-  place(root, 0);
-  // Where the line between levels turns: halfway down the gap above each level.
-  Object.keys(hubs).forEach((h) => { if (pos[h] && h !== root) pos[h].elbow = pos[h].levelTop - o.levelGap / 2; });
+  place(root, 0, 0, null);
 
   // The part of the map to show, with room for labels and the Internet above the router.
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
