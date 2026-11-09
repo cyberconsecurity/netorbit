@@ -1,8 +1,10 @@
 # NetOrbit
 
-[![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=the-scott-davis&repository=netorbit&category=integration)
+[![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=cyberconsecurity&repository=netorbit&category=integration)
 
-![Version](https://img.shields.io/github/v/release/the-scott-davis/netorbit) ![License](https://img.shields.io/github/license/the-scott-davis/netorbit)
+![Version](https://img.shields.io/github/v/release/cyberconsecurity/netorbit) ![License](https://img.shields.io/github/license/cyberconsecurity/netorbit)
+
+> **cyberconsecurity fork** of [the-scott-davis/netorbit](https://github.com/the-scott-davis/netorbit), adding offline colors (red, then orange after an hour), a Tree layout, no overlapping icons, a switch port view and link-speed line colors. Install it as a custom repository: `https://github.com/cyberconsecurity/netorbit` (type Integration).
 
 A live, radial map of your home network for Home Assistant. Every device orbits the router, switch, access point or mesh node it connects through, colored by whether it's answering right now, was seen recently, or has gone quiet.
 
@@ -123,7 +125,7 @@ NetOrbit needs Home Assistant 2026.2 or newer.
 
 ### Marketplace (Home Assistant 2026.11 and newer)
 
-[![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=the-scott-davis&repository=netorbit&category=integration)
+[![Open NetOrbit in the Marketplace](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=cyberconsecurity&repository=netorbit&category=integration)
 
 1. Click the button above, or go to **Settings > Marketplace** and search for **NetOrbit**.
 2. Download it. Home Assistant shows a warning that community code runs with full access to your home; read it and confirm.

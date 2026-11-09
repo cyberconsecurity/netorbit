@@ -18,10 +18,10 @@
     "http",
     "network"
   ],
-  "documentation": "https://github.com/the-scott-davis/netorbit",
+  "documentation": "https://github.com/cyberconsecurity/netorbit",
   "integration_type": "service",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/the-scott-davis/netorbit/issues",
+  "issue_tracker": "https://github.com/cyberconsecurity/netorbit/issues",
   "loggers": [
     "icmplib",
     "pysnmp"
@@ -31,5 +31,5 @@
     "pysnmp>=7.1",
     "aiooui>=0.1.9"
   ],
-  "version": "0.3.1"
+  "version": "2026.11.0"
 }

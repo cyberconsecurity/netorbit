@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2026.11.0 (cyberconsecurity fork)
 
 ### Added
 - **Offline colors.** A device or hub that stops answering turns red straight away, then orange once it hasn't been seen for an hour. The header chips and legend follow. Card options `offline_minutes` (default 60) and `offline_colors: false` (back to the classic yellow/red by the stale window).

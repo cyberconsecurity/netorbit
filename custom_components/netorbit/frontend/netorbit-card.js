@@ -2,7 +2,7 @@
  * Draws a live radial map from the NetOrbit integration's sensors.
  * https://github.com/the-scott-davis/netorbit  (MIT)
  */
-const NETORBIT_VERSION = "0.3.1";
+const NETORBIT_VERSION = "2026.11.0";
 
 const NO_STATUS = {
   online: { color: "#34d399", label: "Online" },
@@ -3402,7 +3402,7 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     name: "NetOrbit",
     description: "Live radial map of your network from the NetOrbit integration.",
     preview: false,
-    documentationURL: "https://github.com/the-scott-davis/netorbit",
+    documentationURL: "https://github.com/cyberconsecurity/netorbit",
   });
 }
 if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitTreeLayout, netorbitSeparate, netorbitLiveStatus, netorbitPortView, netorbitHasPorts, noSpeed, noSpeedText, noMinutes, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
