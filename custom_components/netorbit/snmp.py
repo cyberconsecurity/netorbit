@@ -16,6 +16,14 @@ OID_SYS_OBJECT_ID = "1.3.6.1.2.1.1.2.0"
 OID_BRIDGE_PORTS = "1.3.6.1.2.1.17.1.2.0"  # dot1dBaseNumPorts
 OID_Q_FDB_PORT = "1.3.6.1.2.1.17.7.1.2.2.1.2"  # dot1qTpFdbPort.<vlan>.<mac>
 OID_FDB_PORT = "1.3.6.1.2.1.17.4.3.1.2"  # dot1dTpFdbPort.<mac>
+# Per-port details, so the card can draw a switch's ports. All read-only.
+OID_BASE_PORT_IFINDEX = "1.3.6.1.2.1.17.1.4.1.2"  # dot1dBasePortIfIndex.<bridge port> = ifIndex
+OID_IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"  # ifName.<ifIndex>
+OID_IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"  # ifAlias.<ifIndex> (the port description set on the switch)
+OID_IF_HIGH_SPEED = "1.3.6.1.2.1.31.1.1.1.15"  # ifHighSpeed.<ifIndex>, Mb/s
+OID_IF_SPEED = "1.3.6.1.2.1.2.2.1.5"  # ifSpeed.<ifIndex>, b/s (older switches without ifHighSpeed)
+OID_IF_OPER_STATUS = "1.3.6.1.2.1.2.2.1.8"  # ifOperStatus.<ifIndex>: 1 up, 2 down, ...
+MAX_PORTS = 256
 
 # Grandstream GWN access points list their Wi-Fi clients in GRANDSTREAM-GWN-MIB (gwnClientTable).
 GRANDSTREAM_OID_PREFIX = "1.3.6.1.4.1.42397"
@@ -38,6 +46,55 @@ class ProbeResult:
     name: str | None
     bridge: bool
     object_id: str | None = None  # sysObjectID, e.g. 1.3.6.1.4.1.42397... for Grandstream
+
+
+@dataclass
+class PortInfo:
+    """One switch port as the switch describes it."""
+
+    name: str | None = None
+    alias: str | None = None
+    speed: int | None = None  # Mb/s, only while the link is up
+    up: bool | None = None
+
+
+def build_port_info(
+    to_if: dict[int, Any],
+    names: dict[int, Any],
+    aliases: dict[int, Any],
+    high: dict[int, Any],
+    low: dict[int, Any],
+    oper: dict[int, Any],
+) -> dict[int, PortInfo] | None:
+    """Join the interface columns onto bridge ports. Pure, so it can be tested without a switch.
+
+    to_if maps bridge port -> ifIndex. Without it bridge port n is taken to be interface n, and only
+    interfaces with a link state are kept (that leaves out VLAN and loopback interfaces on most switches).
+    """
+    if to_if:
+        ports = {int(p): int(i) for p, i in to_if.items() if isinstance(i, int) and i > 0}
+    else:
+        ports = {i: i for i in oper}
+    if not ports:
+        return None
+    out: dict[int, PortInfo] = {}
+    for port, ifx in sorted(ports.items())[:MAX_PORTS]:
+        state = oper.get(ifx)
+        up = None if not isinstance(state, int) else state == 1
+        speed = high.get(ifx)
+        if not isinstance(speed, int) or speed <= 0:
+            raw = low.get(ifx)
+            # ifSpeed tops out at 4.29 Gb/s; a value that high means "look at ifHighSpeed", which isn't there.
+            speed = raw // 1_000_000 if isinstance(raw, int) and 0 < raw < 4_294_967_295 else None
+        name = names.get(ifx)
+        alias = aliases.get(ifx)
+        out[port] = PortInfo(
+            name=str(name).strip()[:32] or None if name else None,
+            alias=str(alias).strip()[:64] or None if alias else None,
+            speed=speed if up is not False and speed else None,
+            up=up,
+        )
+    return out
 
 
 def is_grandstream(object_id: str | None, descr: str | None = None) -> bool:
@@ -153,6 +210,54 @@ class SnmpClient:
         if not table:
             table = await self._walk_fdb(host, community, OID_FDB_PORT, vlan=False)
         return table
+
+    async def port_info(self, host: str, community: str) -> dict[int, PortInfo] | None:
+        """{bridge port: PortInfo} with each port's name, speed and link state, or None when unreadable.
+
+        Bridge port numbers are what the MAC table reports, so they are mapped to interfaces through
+        dot1dBasePortIfIndex first. A switch that doesn't publish that map is read as if bridge port n
+        were interface n, which is true of most small switches.
+        """
+        if not await self._ensure():
+            return None
+        try:
+            async with asyncio.timeout(WALK_DEADLINE):
+                to_if = await self._walk_column(host, community, OID_BASE_PORT_IFINDEX)
+                names = await self._walk_column(host, community, OID_IF_NAME)
+                aliases = await self._walk_column(host, community, OID_IF_ALIAS)
+                high = await self._walk_column(host, community, OID_IF_HIGH_SPEED)
+                low = {} if high else await self._walk_column(host, community, OID_IF_SPEED)
+                oper = await self._walk_column(host, community, OID_IF_OPER_STATUS)
+        except TimeoutError:
+            _LOGGER.debug("SNMP port walk of %s took longer than %ss", host, WALK_DEADLINE)
+            return None
+        return build_port_info(to_if, names, aliases, high, low, oper)
+
+    async def _walk_column(self, host: str, community: str, base: str) -> dict[int, Any]:
+        """{last index number: value} for one table column. Empty when the switch doesn't have it."""
+        m = self._mod
+        base_t = tuple(int(x) for x in base.split("."))
+        out: dict[int, Any] = {}
+        try:
+            target = await self._target(host, WALK_TIMEOUT)
+            async for err_ind, err_stat, _idx, binds in m.bulk_walk_cmd(
+                self._engine, m.CommunityData(community, mpModel=1), target, m.ContextData(),
+                0, 40, m.ObjectType(m.ObjectIdentity(base)), lexicographicMode=False,
+            ):
+                if err_ind or err_stat:
+                    return out
+                for name, val in binds:
+                    oid = tuple(name)
+                    if oid[: len(base_t)] != base_t or len(oid) != len(base_t) + 1:
+                        continue
+                    value = _value(val)
+                    if value is not None:
+                        out[int(oid[-1])] = value
+                    if len(out) >= MAX_TABLE:
+                        return out
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("SNMP walk of %s %s failed: %s", host, base, err)
+        return out
 
     async def wireless_clients(self, host: str, community: str) -> set[str] | None:
         """MACs of the Wi-Fi clients a Grandstream GWN access point lists, or None when unreadable.

@@ -37,6 +37,7 @@ class FakeNet:
         # SNMP: ip -> (community, ProbeResult) and ip -> {mac: port}
         self.snmp: dict[str, tuple[str, object]] = {}
         self.tables: dict[str, dict[str, int]] = {}
+        self.ports: dict[str, dict] = {}  # ip -> {bridge port: PortInfo} a switch reports (missing: unreadable)
         self.wifi: dict[str, object] = {}  # ip -> set of Wi-Fi client MACs a Grandstream AP lists (or None: unreadable)
         self.dns: dict[str, str] = {}
         self.probed: list[tuple[str, str]] = []  # every (ip, community) NetOrbit asked
@@ -54,6 +55,12 @@ class FakeNet:
         entry = self.snmp.get(ip)
         if entry and entry[0] == community:
             return dict(self.tables.get(ip, {}))
+        return None
+
+    async def snmp_ports(self, _client, ip, community):
+        entry = self.snmp.get(ip)
+        if entry and entry[0] == community and ip in self.ports:
+            return dict(self.ports[ip])
         return None
 
     async def snmp_wifi(self, _client, ip, community):
@@ -89,6 +96,7 @@ def fake_net():
         patch("aiooui.get_vendor", side_effect=lambda prefix: net.vendors.get(prefix)),
         patch("custom_components.netorbit.snmp.SnmpClient.probe", autospec=True, side_effect=net.snmp_probe),
         patch("custom_components.netorbit.snmp.SnmpClient.mac_table", autospec=True, side_effect=net.snmp_table),
+        patch("custom_components.netorbit.snmp.SnmpClient.port_info", autospec=True, side_effect=net.snmp_ports),
         patch("custom_components.netorbit.snmp.SnmpClient.wireless_clients", autospec=True, side_effect=net.snmp_wifi),
     ):
         yield net

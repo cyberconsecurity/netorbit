@@ -147,5 +147,28 @@
     Object.assign(byLabel("NAS").attributes, { fqdn: "nas.home.example", hostname: "nas", managed_by: "Office Switch", first_seen: new Date(Date.now() - 90 * 86400e3).toISOString(),
       fields: { Location: "Office closet", Serial: "NAS-00042", Notes: "Backups run at 02:00; spare disk in the drawer" } });
     Object.assign(byLabel("Printer").attributes, { fqdn: "printer.home.example", hostname: "printer", managed_by: "https://192.0.2.30/", fields: { Toner: "ordered 2026-10" } });
+    // Switch ports and link speeds, for the port view and the speed-colored lines. Node keys come from the states.
+    const key = (l) => byLabel(l).attributes.node_key;
+    const plug = (l, port, speed) => Object.assign(byLabel(l).attributes, { port, port_name: "Port " + port, port_speed: speed });
+    plug("Hallway AP", 2, 2500); plug("Den AP", 3, 1000); plug("Patio AP", 4, 1000); plug("Office Switch", 5, 10000);
+    byLabel("Core Switch").attributes.ports = [
+      { port: 1, name: "Port 1", speed: 10000, up: true, uplink: true, nodes: [], macs: 3 },
+      { port: 2, name: "Port 2", speed: 2500, up: true, uplink: false, nodes: [key("Hallway AP")], macs: 9 },
+      { port: 3, name: "Port 3", speed: 1000, up: true, uplink: false, nodes: [key("Den AP")], macs: 12 },
+      { port: 4, name: "Port 4", speed: 1000, up: true, uplink: false, nodes: [key("Patio AP")], macs: 6 },
+      { port: 5, name: "Port 5", speed: 10000, up: true, uplink: false, nodes: [key("Office Switch")], macs: 8 },
+      { port: 6, name: "Port 6", speed: null, up: false, uplink: false, nodes: [], macs: 0 },
+      { port: 7, name: "Port 7", alias: "Spare drop, lounge", speed: 100, up: true, uplink: false, nodes: [], macs: 2 },
+      { port: 8, name: "Port 8", speed: 1000, up: true, uplink: false, nodes: [], macs: 0 },
+    ];
+    const office = ["Desktop", "NAS", "Home Assistant", "Soundbar", "Bookshelf Speaker", "Printer", "Game Console"];
+    const speeds = [2500, 10000, 1000, 100, 100, 100, 1000];
+    office.forEach((l, i) => plug(l, i + 2, speeds[i]));
+    byLabel("Office Switch").attributes.ports = [{ port: 1, name: "Port 1", speed: 10000, up: true, uplink: true, nodes: [], macs: 30 }]
+      .concat(office.map((l, i) => ({ port: i + 2, name: "Port " + (i + 2), speed: speeds[i], up: true, uplink: false, nodes: [key(l)], macs: 1 })))
+      .concat([9, 10, 11, 12, 13, 14, 15, 16].map((p) => ({ port: p, name: "Port " + p, speed: null, up: p === 12 ? true : false, uplink: false, nodes: [], macs: 0 })));
+    // Went quiet ten minutes ago: red with offline colors (orange after an hour).
+    Object.assign(byLabel("Game Console").attributes, { last_seen: new Date(Date.now() - 10 * 60e3).toISOString() });
+    byLabel("Game Console").state = "recent";
   })();
 })();

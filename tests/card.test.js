@@ -608,7 +608,8 @@ test("the details popup lets the map update and opens again from the new data; f
   card._popLast = 1234;
   card.hass = hass(list("stale"));
   assert.strictEqual(drawn, 2, "the map updates under the details popup");
-  assert.deepStrictEqual(shown, [["stale", "40px", "60px", 30, 1234]], "and the popup opens again with the new status, where it was");
+  // "stale" with no last-seen time is drawn as "gone" (orange) with offline colors, which are on by default.
+  assert.deepStrictEqual(shown, [["gone", "40px", "60px", 30, 1234]], "and the popup opens again with the new status, where it was");
 
   card._liveDetails = null; // a form (Edit, a menu) is open instead
   card.hass = hass(list("online"));
@@ -757,4 +758,192 @@ test("blocked storage falls back to the card's option, and a pick still works on
   assert.strictEqual(c._layoutName(), "balloon");
   c._setLayout("radial");
   assert.strictEqual(c._layoutName(), "radial");
+});
+
+// ------------------------------------------------------------------ offline colors, tree, overlap, ports
+
+const NO = require("../custom_components/netorbit/frontend/netorbit-card.js");
+
+test("offline colors: red while recently gone, orange once gone longer than the offline time", () => {
+  const now = Date.parse("2026-11-09T12:00:00Z");
+  const ago = (min) => new Date(now - min * 60000).toISOString();
+  assert.strictEqual(NO.netorbitLiveStatus("online", ago(500), null, now, 60), "online");
+  assert.strictEqual(NO.netorbitLiveStatus("recent", ago(5), null, now, 60), "offline");
+  assert.strictEqual(NO.netorbitLiveStatus("recent", ago(59), null, now, 60), "offline");
+  assert.strictEqual(NO.netorbitLiveStatus("recent", ago(61), null, now, 60), "gone");
+  assert.strictEqual(NO.netorbitLiveStatus("stale", ago(3000), null, now, 60), "gone");
+  // Never answered: the first time it was seen counts; nothing at all is orange.
+  assert.strictEqual(NO.netorbitLiveStatus("recent", null, ago(2), now, 60), "offline");
+  assert.strictEqual(NO.netorbitLiveStatus("recent", null, null, now, 60), "gone");
+  // A custom offline time.
+  assert.strictEqual(NO.netorbitLiveStatus("recent", ago(20), null, now, 15), "gone");
+  for (const s of ["new", "unknown", "group"]) assert.strictEqual(NO.netorbitLiveStatus(s, null, null, now, 60), s);
+  assert.strictEqual(NO.noMinutes(60), "1 h");
+  assert.strictEqual(NO.noMinutes(90), "90 min");
+});
+
+function cardWith(config, states) {
+  const c = new globalThis.NetOrbitCard();
+  c.shadowRoot = {};
+  c.setConfig(config);
+  c._hass = { states: Object.fromEntries(states.map((s) => [s.entity_id, s])), entities: {}, user: { is_admin: true } };
+  return c;
+}
+
+test("the card draws non-answering devices red, then orange, and the classic colors when asked", () => {
+  const st = (id, attrs, state) => ({ entity_id: id, state, attributes: Object.assign({ netorbit: true }, attrs) });
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  const states = [
+    st("sensor.r", { kind: "hub", node_key: "hub:gateway", label: "Router" }, "online"),
+    st("sensor.a", { kind: "device", node_key: "a", link: "hub:gateway", label: "A", last_seen: ago(3) }, "recent"),
+    st("sensor.b", { kind: "device", node_key: "b", link: "hub:gateway", label: "B", last_seen: ago(200) }, "recent"),
+    st("sensor.c", { kind: "device", node_key: "c", link: "hub:gateway", label: "C", last_seen: ago(5000) }, "stale"),
+  ];
+  const by = (m) => Object.fromEntries(m.devices.map((d) => [d.key, d.status]));
+  assert.deepStrictEqual(by(cardWith({}, states)._model()), { a: "offline", b: "gone", c: "gone" });
+  assert.deepStrictEqual(by(cardWith({ offline_minutes: 300 }, states)._model()), { a: "offline", b: "offline", c: "gone" });
+  assert.deepStrictEqual(by(cardWith({ offline_colors: false }, states)._model()), { a: "recent", b: "recent", c: "stale" });
+  assert.strictEqual(cardWith({ offline_minutes: 90 }, states)._model().labels.gone, "Offline 90 min+");
+});
+
+function discsOf(m, D) {
+  const out = [];
+  Object.values(m.hubs).forEach((h) => out.push([h.key, D.pos[h.key], h.key === m.root ? 32 : 25]));
+  m.devices.forEach((d) => out.push([d.key, D.pos[d.key], 15]));
+  if (m.internet) out.push(["internet", D.pos.internet, 16]);
+  return out.filter((x) => x[1]);
+}
+
+function assertNoOverlap(m, D, what) {
+  const all = discsOf(m, D);
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const [ka, a, ra] = all[i], [kb, b, rb] = all[j];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      assert.ok(d >= ra + rb - 0.5, `${what}: ${ka} and ${kb} overlap (${d.toFixed(1)} < ${ra + rb})`);
+    }
+  }
+}
+
+test("no icons overlap in any layout, on small and very busy maps", () => {
+  const shapes = [
+    [[["r", null], ["sw", "r"], ["ap1", "sw"], ["ap2", "sw"], ["mesh", "r"]], { r: 2, sw: 3, ap1: 10, ap2: 7, mesh: 4 }],
+    [[["r", null], ["a", "r"], ["b", "r"], ["c", "a"], ["d", "c"], ["e", "d"]], { r: 30, a: 40, b: 35, c: 20, d: 18, e: 12 }],
+    [[["r", null]], { r: 210 }],
+    [[["r", null], ["s1", "r"], ["s2", "r"], ["s3", "r"], ["s4", "s1"]], { r: 1, s1: 0, s2: 60, s3: 0, s4: 70 }],
+  ];
+  for (const [hubs, devs] of shapes) {
+    const m = model(hubs, devs);
+    m.internet = { key: "internet", status: "online" };
+    for (const layout of ["radial", "balloon", "tree"]) {
+      const D = netorbitDraw(m, {}, { layout, aspect: 1.5 });
+      assertNoOverlap(m, D, `${layout} ${m.devices.length} devices`);
+    }
+  }
+});
+
+test("tree layout: router on top, each hub below its parent, devices under their own hub", () => {
+  const m = model([["r", null], ["sw", "r"], ["ap1", "sw"], ["ap2", "sw"], ["mesh", "r"]], { r: 4, sw: 3, ap1: 14, ap2: 7, mesh: 2 });
+  const L = NO.netorbitTreeLayout(m, {});
+  assert.ok(L.tree && L.view);
+  for (const k of Object.keys(m.hubs)) assert.ok(L.pos[k], k);
+  for (const d of m.devices) {
+    const p = L.pos[d.key], h = L.pos[d.link];
+    assert.ok(p.y > h.y, `${d.key} below its hub`);
+    assert.strictEqual(p.hub, d.link);
+  }
+  for (const [k, parent] of [["sw", "r"], ["ap1", "sw"], ["ap2", "sw"], ["mesh", "r"]]) assert.ok(L.pos[k].y > L.pos[parent].y, `${k} below ${parent}`);
+  // Hubs on one level line up.
+  assert.strictEqual(L.pos.sw.y, L.pos.mesh.y);
+  assert.strictEqual(L.pos.ap1.y, L.pos.ap2.y);
+  // Siblings' branches don't share any width: every device of ap1 is left of every device of ap2, or the other way.
+  const xs = (hub) => m.devices.filter((d) => d.link === hub).map((d) => L.pos[d.key].x);
+  const a = xs("ap1"), b = xs("ap2");
+  assert.ok(Math.max(...a) < Math.min(...b) || Math.max(...b) < Math.min(...a));
+  // Device labels in one grid row don't run into each other: cells are wider than the longest label.
+  const row = m.devices.filter((d) => d.link === "ap1").map((d) => L.pos[d.key]).filter((p, _, all) => p.y === all[0].y).map((p) => p.x).sort((x, y) => x - y);
+  for (let i = 1; i < row.length; i++) assert.ok(row[i] - row[i - 1] >= 12 * 7 + 8);
+});
+
+test("tree layout draws square elbow lines and flat labels", () => {
+  const m = model([["r", null], ["sw", "r"]], { sw: 3 });
+  const D = netorbitDraw(m, {}, { layout: "tree" });
+  const swLine = D.scene.links.find((l) => l.k === "sw");
+  assert.match(swLine.d, /^M[\d.-]+,[\d.-]+ V[\d.-]+ H[\d.-]+ V[\d.-]+$/);
+  const devLine = D.scene.links.find((l) => l.k === "sw-d0");
+  assert.match(devLine.d, / V.* H.* V.* H/);
+  assert.ok(D.scene.devLabels.every((l) => l.rot === 0 && l.anchor === "middle"));
+});
+
+test("the card's layout switch offers the tree, and remembers it", () => {
+  const c = new globalThis.NetOrbitCard();
+  c.shadowRoot = {};
+  c.setConfig({ layout: "tree" });
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+  assert.strictEqual(c._layoutName(), "tree");
+  c.setConfig({ layout: "nonsense" });
+  assert.strictEqual(c._layoutName(), "radial");
+});
+
+test("link speed: lines take the speed color when the far end answers, the status color otherwise", () => {
+  assert.strictEqual(NO.noSpeed(null), null);
+  assert.strictEqual(NO.noSpeed(10).label, "10 Mb/s");
+  assert.strictEqual(NO.noSpeed(100).label, "100 Mb/s");
+  assert.strictEqual(NO.noSpeed(1000).label, "1 Gb/s");
+  assert.strictEqual(NO.noSpeed(2500).label, "2.5–5 Gb/s");
+  assert.strictEqual(NO.noSpeed(10000).label, "10 Gb/s+");
+  assert.strictEqual(NO.noSpeedText(2500), "2.5 Gb/s");
+  assert.strictEqual(NO.noSpeedText(100), "100 Mb/s");
+  const m = model([["r", null], ["sw", "r"]], { sw: 2 });
+  m.hubs.sw.kind = "hub"; m.hubs.sw.status = "online"; m.hubs.sw.port_speed = 10000;
+  m.devices[0].status = "online"; m.devices[0].port_speed = 1000;
+  m.devices[1].status = "offline"; m.devices[1].port_speed = 1000;
+  const D = netorbitDraw(m, {}, {});
+  const color = (k) => D.scene.links.find((l) => l.k === k).color;
+  assert.strictEqual(color("sw"), NO.noSpeed(10000).color);
+  assert.strictEqual(color("sw-d0"), NO.noSpeed(1000).color);
+  assert.strictEqual(color("sw-d1"), "#ef4444"); // offline: the red matters more than the speed
+  assert.deepStrictEqual(D.speeds.map((b) => b.label), ["10 Gb/s+", "1 Gb/s"]);
+  const plain = netorbitDraw(m, { speed_colors: false }, {});
+  assert.deepStrictEqual(plain.speeds, []);
+});
+
+test("port view: states, what each port lights up, and the uplink", () => {
+  const sw = { key: "hub:sw", kind: "hub", hub_type: "switch", parent: "hub:gateway", ports: [
+    { port: 3, up: true, speed: 1000, nodes: ["nas"], macs: 1 },
+    { port: 1, up: true, speed: 10000, uplink: true, nodes: [], macs: 40 },
+    { port: 2, up: false, nodes: [], macs: 0 },
+    { port: 4, up: true, nodes: [], macs: 3 },
+    { port: 5, up: true, nodes: [], macs: 0 },
+    { port: 6, up: null, nodes: [], macs: 0 },
+    { port: 7, up: true, speed: 2500, nodes: ["hub:ap", "pc"], macs: 9 },
+  ] };
+  const hubs = { "hub:gateway": { key: "hub:gateway" }, "hub:sw": sw, "hub:ap": { key: "hub:ap" } };
+  const v = NO.netorbitPortView(sw, { nas: {}, pc: {} }, hubs);
+  assert.deepStrictEqual(v.map((p) => p.port), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepStrictEqual(v.map((p) => p.state), ["used", "down", "used", "learned", "idle", "unknown", "used"]);
+  assert.deepStrictEqual(v[0].targets, ["hub:gateway"]);
+  assert.deepStrictEqual(v[0].lines, ["hub:sw"]);
+  assert.deepStrictEqual(v[2].targets, ["nas"]);
+  assert.deepStrictEqual(v[6].lines, ["hub:ap", "pc"]);
+  assert.ok(NO.netorbitHasPorts(sw));
+  assert.ok(NO.netorbitHasPorts({ kind: "hub", hub_type: "switch" }), "a switch with no readable ports still opens the port view, to say so");
+  assert.ok(!NO.netorbitHasPorts({ kind: "hub", hub_type: "access_point" }));
+  assert.ok(!NO.netorbitHasPorts({ kind: "device", ports: [{ port: 1 }] }));
+});
+
+test("the separation pass keeps a moved device's label angle in step with where it went", () => {
+  const pos = { a: { x: 100, y: 100, a: 0, r: 100 }, b: { x: 105, y: 100, a: 0, r: 105 } };
+  const moved = NO.netorbitSeparate(pos, [{ k: "a", r: 15, w: 1 }, { k: "b", r: 15, w: 1 }], 6, { x: 0, y: 100 });
+  assert.ok(moved.size === 2);
+  assert.ok(Math.hypot(pos.a.x - pos.b.x, pos.a.y - pos.b.y) >= 36 - 0.01);
+  for (const k of ["a", "b"]) {
+    assert.ok(Math.abs(pos[k].r - Math.hypot(pos[k].x, pos[k].y - 100)) < 0.01);
+    assert.ok(Math.abs(pos[k].a - Math.atan2(pos[k].y - 100, pos[k].x)) < 1e-9);
+  }
+  // Weight 0 never moves.
+  const fixed = { r: { x: 0, y: 0 }, d: { x: 1, y: 0 } };
+  NO.netorbitSeparate(fixed, [{ k: "r", r: 32, w: 0 }, { k: "d", r: 15, w: 1 }]);
+  assert.deepStrictEqual([fixed.r.x, fixed.r.y], [0, 0]);
+  assert.ok(Math.hypot(fixed.d.x, fixed.d.y) >= 53 - 0.01);
 });

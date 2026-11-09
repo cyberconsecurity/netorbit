@@ -8,6 +8,10 @@ const NO_STATUS = {
   online: { color: "#34d399", label: "Online" },
   recent: { color: "#fbbf24", label: "Seen recently" },
   stale: { color: "#f87171", label: "Not seen" },
+  // With offline colors on (the default), a device that stops answering is red ("offline") and turns orange
+  // ("gone") once it hasn't been seen for offline_minutes (60 by default). See netorbitLiveStatus.
+  offline: { color: "#ef4444", label: "Offline" },
+  gone: { color: "#fb923c", label: "Offline 1 h+" },
   new: { color: "#c084fc", label: "New" },
   unknown: { color: "#64748b", label: "Unknown" },
 };
@@ -40,6 +44,46 @@ const NO_HUB_TYPE = {
 };
 
 const NO_NAME_MAX = 64;
+
+/** The status a hub or device is drawn with. NetOrbit's sensors say online, recent (seen within the stale window)
+ * or stale; with offline colors on, anything not answering is "offline" (red) until it has been gone `minutes`,
+ * then "gone" (orange). Other states (new, unknown, group) pass through. Pure; exported for tests. */
+function netorbitLiveStatus(status, lastSeen, firstSeen, now, minutes) {
+  if (status !== "recent" && status !== "stale") return status;
+  const t = new Date(lastSeen || firstSeen || 0).getTime();
+  if (!t || isNaN(t)) return "gone";
+  return now - t < Math.max(1, Number(minutes) || 60) * 60000 ? "offline" : "gone";
+}
+
+/** "1 h", "90 min", "2 h": how a number of minutes reads in the legend and chips. */
+function noMinutes(m) {
+  m = Math.max(1, Math.round(Number(m) || 60));
+  return m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+}
+
+/** Link speed buckets for the lines, in Mb/s. Distinct from the status colors on purpose. */
+const NO_SPEEDS = [
+  { min: 10000, color: "#e2e8f0", label: "10 Gb/s+" },
+  { min: 2500, color: "#818cf8", label: "2.5–5 Gb/s" },
+  { min: 1000, color: "#38bdf8", label: "1 Gb/s" },
+  { min: 100, color: "#2dd4bf", label: "100 Mb/s" },
+  { min: 0, color: "#94a3b8", label: "10 Mb/s" },
+];
+
+/** The speed bucket for a link speed in Mb/s, or null when unknown. Pure; exported for tests. */
+function noSpeed(mbps) {
+  const v = Number(mbps);
+  if (!v || !isFinite(v) || v <= 0) return null;
+  for (const b of NO_SPEEDS) if (v >= b.min) return b;
+  return null;
+}
+
+/** A speed in Mb/s as people say it: "100 Mb/s", "1 Gb/s", "2.5 Gb/s". */
+function noSpeedText(mbps) {
+  const v = Number(mbps);
+  if (!v || v <= 0) return "";
+  return v >= 1000 ? `${+(v / 1000).toFixed(1)} Gb/s` : `${v} Mb/s`;
+}
 
 function noEsc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -156,11 +200,15 @@ function netorbitLayout(model, opts) {
   const angle = (i) => start + step * i + step / 2;
   const pos = {};
   pos[root] = { x: o.cx, y: o.cy, a: -Math.PI / 2, depth: 0 };
-  const stagger = N > 64;
+  // A busy ring is split into tiers a step apart, every tier-th slot on the same tier, so neighbours on one tier
+  // are at least a disc apart. Two tiers from 65 devices (as before), up to four for very large maps.
+  const tiers = N > 64 ? Math.min(4, Math.max(2, Math.ceil((N * 34) / (2 * Math.PI * o.rDev)))) : 1;
+  const rIn = o.rDev - (tiers - 1) * 36;
+  o.rHubMax = Math.min(o.rHubMax, rIn - 52);
   slots.forEach((s, i) => {
     if (s.type !== "dev") return;
     const a = angle(i);
-    const r = o.rDev - (stagger && i % 2 ? 36 : 0);
+    const r = o.rDev - (i % tiers) * 36;
     pos[s.d.key] = { x: o.cx + r * Math.cos(a), y: o.cy + r * Math.sin(a), a, r, hub: s.hub };
   });
   const maxDepth = Math.max(1, ...Object.keys(depth).map((k) => depth[k]));
@@ -179,7 +227,7 @@ function netorbitLayout(model, opts) {
 /** Push apart hubs that ended up on top of each other, keeping them between the router and the device ring. */
 function netorbitSpreadHubs(pos, keys, o) {
   const minD = 88;
-  const rMin = 105, rMax = o.rDev - 60;
+  const rMin = 105, rMax = Math.min(o.rDev - 60, o.rHubMax + 20);
   for (let iter = 0; iter < 120; iter++) {
     let moved = false;
     for (let i = 0; i < keys.length; i++) {
@@ -304,6 +352,10 @@ function netorbitBalloonLayout(model, opts) {
       else {
         const want = room > 0 ? (devs.length * o.gap) / room : Infinity;
         if (want <= o.maxRing || (!kids.length && want < Infinity)) { ring = Math.max(minRing, want); break; }
+        // A hub with more devices than fit on its widest ring, and hubs below it: pushing the branch further out
+        // stops helping long before 400 steps (which put it millions of units away and ran the page out of
+        // memory). Past four times out, give the devices a wider ring instead.
+        if (far > 4) { ring = Math.max(minRing, (devs.length * o.gap) / Math.max(A * 0.25, room)); break; }
       }
       far *= 1.04;
     }
@@ -441,6 +493,175 @@ function netorbitBalloonLayout(model, opts) {
   return { pos, slots: [], N: devices.length, arc: o.gap, kidsHub, depth, view, balloon: true, maxChars: o.chars };
 }
 
+/** Tree layout: the router at the top and each level of hubs below the one it connects through, like an org
+ * chart. A hub's devices sit in a small grid right under it, and its child hubs on the next level down. Every
+ * hub's branch gets a band of its own across the map, wide enough for its devices, its label and everything below
+ * it, so nothing can overlap. Returns what netorbitBalloonLayout does, plus the lines' routing (trunk and bus
+ * points) for the elbow links. Pure; exported for tests. */
+function netorbitTreeLayout(model, opts) {
+  const o = Object.assign({ cellW: 104, cellH: 70, maxCols: 3, hubGap: 36, levelGap: 70, trunkGap: 28, chars: 14, labW: 8.6, aspect: 1.5, margin: 36 }, opts || {});
+  const { hubs, root, devices } = model;
+  const kidsHub = {};
+  const kidsDev = {};
+  Object.keys(hubs).forEach((k) => { kidsHub[k] = []; kidsDev[k] = []; });
+  Object.values(hubs).forEach((h) => { if (h.key !== root) kidsHub[hubs[h.parent] ? h.parent : root].push(h.key); });
+  devices.forEach((d) => kidsDev[hubs[d.link] ? d.link : root].push(d));
+  const lab = (n) => String(n.sort != null ? n.sort : n.label);
+  Object.values(kidsDev).forEach((a) => a.sort((x, y) => lab(x).localeCompare(lab(y))));
+  Object.values(kidsHub).forEach((a) => a.sort((x, y) => (x === "__new") - (y === "__new") || lab(hubs[x]).localeCompare(lab(hubs[y]))));
+  const children = {};
+  const depth = {};
+  const visit = (h, dep) => {
+    depth[h] = dep;
+    children[h] = [];
+    kidsHub[h].forEach((c) => { if (!(c in depth)) { children[h].push(c); visit(c, dep + 1); } });
+  };
+  visit(root, 0);
+  Object.keys(hubs).forEach((h) => { if (!(h in depth)) { children[root].push(h); visit(h, 1); } });
+
+  const R = 32; // every hub's centre sits as far below its level's top as the router's, so a level lines up
+  const radius = (h) => (h === root ? 32 : hubs[h].kind === "group" ? 19 : 25);
+  const labelW = (h) => Math.min(String(hubs[h].label == null ? "" : hubs[h].label).length, 26) * o.labW + 10;
+  // The device grid under a hub: narrow and tall, so a tree of several hubs still fits a card. With child hubs
+  // below, the grid splits either side of a clear gap for the line down to them.
+  const G = {};
+  const grid = (h) => {
+    const n = kidsDev[h].length;
+    if (!n) return { cols: 0, rows: 0, h: 0, L: 0, gap: 0, left: 0, right: 0 };
+    const cols = Math.min(n, o.maxCols, Math.max(1, Math.ceil(Math.sqrt(n * 0.6))));
+    const rows = Math.ceil(n / cols);
+    if (!children[h].length) return { cols, rows, h: rows * o.cellH, L: 0, gap: 0, left: (cols * o.cellW) / 2, right: (cols * o.cellW) / 2 };
+    const L = Math.floor(cols / 2);
+    return { cols, rows, h: rows * o.cellH, L, gap: o.trunkGap, left: o.trunkGap / 2 + L * o.cellW, right: o.trunkGap / 2 + (cols - L) * o.cellW };
+  };
+  // Each branch's room either side of its hub: its grid, its child branches (centred under it) and, on the right,
+  // the hub's label.
+  const left = {}, right = {};
+  const kidsW = (h) => children[h].reduce((n, c) => n + left[c] + right[c], 0) + Math.max(0, children[h].length - 1) * o.hubGap;
+  const measure = (h) => {
+    children[h].forEach(measure);
+    G[h] = grid(h);
+    const half = kidsW(h) / 2;
+    left[h] = Math.max(G[h].left, half, radius(h) + 14);
+    right[h] = Math.max(G[h].right, half, radius(h) + 14 + labelW(h));
+  };
+  measure(root);
+  // Each level is as tall as its tallest hub plus device grid.
+  const levelH = {};
+  Object.keys(depth).forEach((h) => {
+    const d = depth[h];
+    levelH[d] = Math.max(levelH[d] || 0, 2 * R + (G[h].rows ? 30 + G[h].h : 0));
+  });
+  const levels = Object.keys(levelH).map(Number).sort((a, b) => a - b);
+  const levelY = {};
+  let y = 0;
+  levels.forEach((d) => { levelY[d] = y; y += levelH[d] + o.levelGap; });
+
+  const pos = {};
+  const place = (h, x0) => {
+    const cx = x0 + left[h];
+    const cy = levelY[depth[h]] + R;
+    pos[h] = { x: cx, y: cy, a: Math.PI / 2, r: 0, depth: depth[h], tree: true, levelTop: levelY[depth[h]] };
+    const g = G[h];
+    const top = cy + R + 30;
+    kidsDev[h].forEach((d, i) => {
+      const col = i % g.cols, row = Math.floor(i / g.cols);
+      const cellLeft = !g.gap ? cx - g.left + col * o.cellW
+        : col < g.L ? cx - g.gap / 2 - (g.L - col) * o.cellW : cx + g.gap / 2 + (col - g.L) * o.cellW;
+      pos[d.key] = {
+        x: cellLeft + o.cellW / 2, y: top + row * o.cellH + 16, a: Math.PI / 2, r: 0, hub: h, tree: true,
+        // The device's line: down from the hub to a bus, along it to this column's gutter, down, then in.
+        bus: { y: cy + R + 14, gutter: cellLeft + 4 },
+      };
+    });
+    let x = cx - kidsW(h) / 2;
+    children[h].forEach((c) => { place(c, x); x += left[c] + right[c] + o.hubGap; });
+  };
+  place(root, 0);
+  // Where the line between levels turns: halfway down the gap above each level.
+  Object.keys(hubs).forEach((h) => { if (pos[h] && h !== root) pos[h].elbow = pos[h].levelTop - o.levelGap / 2; });
+
+  // The part of the map to show, with room for labels and the Internet above the router.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  Object.keys(hubs).forEach((h) => {
+    const p = pos[h];
+    if (!p) return;
+    x0 = Math.min(x0, p.x - radius(h) - 10); x1 = Math.max(x1, p.x + radius(h) + 14 + labelW(h));
+    y0 = Math.min(y0, p.y - radius(h) - 20); y1 = Math.max(y1, p.y + radius(h) + 30);
+  });
+  devices.forEach((d) => {
+    const p = pos[d.key];
+    if (!p) return;
+    x0 = Math.min(x0, p.x - o.cellW / 2); x1 = Math.max(x1, p.x + o.cellW / 2);
+    y1 = Math.max(y1, p.y + 36);
+  });
+  if (model.internet) y0 = Math.min(y0, pos[root].y - 62 - 30);
+  const w = x1 - x0 + 2 * o.margin, hh = y1 - y0 + 2 * o.margin;
+  const minH = 620, minW = minH * o.aspect;
+  const view = { x: x0 - o.margin - Math.max(0, minW - w) / 2, y: y0 - o.margin, w: Math.max(w, minW), h: Math.max(hh, minH) };
+  if (view.w / view.h < o.aspect) { const nw = view.h * o.aspect; view.x -= (nw - view.w) / 2; view.w = nw; }
+  return { pos, slots: [], N: devices.length, arc: o.cellW, kidsHub, depth, view, tree: true, maxChars: o.chars };
+}
+
+/** Push apart any discs that touch: items are {k, r, w} with a key into pos, a radius and a weight (0 = never
+ * moves). Hubs are heavier than devices, so devices give way. A device that moves keeps its angle and distance
+ * (a, r) in step with its new place, so its label follows it. Returns the keys that moved. Pure apart from
+ * updating pos; exported for tests. */
+function netorbitSeparate(pos, items, gap, centre) {
+  gap = gap == null ? 6 : gap;
+  const list = items.filter((it) => pos[it.k]);
+  const moved = new Set();
+  const cell = 72;
+  for (let iter = 0; iter < 400; iter++) {
+    const cells = new Map();
+    list.forEach((it, i) => {
+      const p = pos[it.k];
+      const key = Math.floor(p.x / cell) + "," + Math.floor(p.y / cell);
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(i);
+    });
+    let any = false;
+    list.forEach((a, i) => {
+      const p = pos[a.k];
+      const ci = Math.floor(p.x / cell), cj = Math.floor(p.y / cell);
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const near = cells.get((ci + di) + "," + (cj + dj));
+        if (!near) continue;
+        near.forEach((j) => {
+          if (j <= i) return;
+          const b = list[j];
+          const q = pos[b.k];
+          const need = a.r + b.r + gap;
+          let dx = q.x - p.x, dy = q.y - p.y;
+          let d = Math.hypot(dx, dy);
+          if (d >= need - 0.01) return;
+          if (!a.w && !b.w) return;
+          if (d < 0.01) { dx = Math.cos(i * 2.39996 + j); dy = Math.sin(i * 2.39996 + j); d = 1; }
+          else { dx /= d; dy /= d; }
+          const push = (need - d) * 1.02 + 0.2;
+          const sa = !a.w ? 0 : !b.w ? 1 : b.w / (a.w + b.w);
+          const sb = 1 - sa;
+          if (sa) { p.x -= dx * push * sa; p.y -= dy * push * sa; moved.add(a.k); }
+          if (sb) { q.x += dx * push * sb; q.y += dy * push * sb; moved.add(b.k); }
+          any = true;
+        });
+      }
+    });
+    if (!any) break;
+  }
+  // Keep each moved disc's angle and distance from the centre of its ring in step with where it is now.
+  moved.forEach((k) => {
+    const p = pos[k];
+    p.x = +p.x.toFixed(2); p.y = +p.y.toFixed(2);
+    if (p.tree) return;
+    const ox = p.ox != null ? p.ox : centre ? centre.x : null, oy = p.oy != null ? p.oy : centre ? centre.y : null;
+    if (ox == null || p.r == null) return;
+    p.a = Math.atan2(p.y - oy, p.x - ox);
+    p.r = Math.hypot(p.x - ox, p.y - oy);
+  });
+  return moved;
+}
+
 /** One hub's branch on its own: that hub as the root, with every hub and device below it, and the hub above it as a
  * grey "up" hub (kind "uphub") hanging off it, without its devices, as the way back up. `path` runs from the whole
  * map's root down to the hub, for the row of links back. Anything else (no such hub, or the root itself) is the
@@ -464,6 +685,44 @@ function netorbitFocus(model, key) {
   const up = path.length > 1 ? path[path.length - 2] : null;
   if (up && hubs[up] && !keep.has(up)) sub[up] = Object.assign({}, hubs[up], { parent: key, kind: "uphub" });
   return Object.assign({}, model, { hubs: sub, root: key, devices: devices.filter((d) => keep.has(d.link)), internet: null, focus: key, path, up });
+}
+
+/** True for a hub with a port view: a switch, or any hub whose ports NetOrbit could read. */
+function netorbitHasPorts(n) {
+  return !!n && n.kind === "hub" && ((Array.isArray(n.ports) && n.ports.length > 0) || n.hub_type === "switch");
+}
+
+/** A port's own name when it says more than its number: "Gi1/0/7" yes, "7", "Port 7" or "port7" no. */
+function noPortName(port, name) {
+  const s = String(name == null ? "" : name).trim();
+  if (!s) return "";
+  return s.replace(/[\s_-]+/g, "").toLowerCase().replace(/^(port|p)/, "") === String(port) ? "" : s;
+}
+
+/** "7 (Gi1/0/7) · 1 Gb/s" for a node plugged into a switch port. */
+function noPortText(n) {
+  if (!n || !n.port) return "";
+  const name = noPortName(n.port, n.port_name);
+  return `${n.port}${name ? ` (${name})` : ""}${n.port_speed ? ` · ${noSpeedText(n.port_speed)}` : ""}`;
+}
+
+/** The port view of a switch: one entry per port with its state ("used", "learned": addresses but nothing
+ * tracked, "idle": link up and empty, "down", "unknown"), what to light up on the map (targets) and which lines
+ * (each line is keyed by the node at its far end). The uplink lights the hub above and the switch's own line.
+ * Pure; exported for tests. */
+function netorbitPortView(sw, all, hubs) {
+  const list = Array.isArray(sw && sw.ports) ? sw.ports : [];
+  return list.slice().sort((a, b) => a.port - b.port).map((q) => {
+    const nodes = (q.nodes || []).slice();
+    let targets = nodes, lines = nodes;
+    if (q.uplink) {
+      const up = hubs[sw.parent] ? sw.parent : null;
+      targets = up ? [up] : [];
+      lines = [sw.key];
+    }
+    const state = q.up === false ? "down" : nodes.length || q.uplink ? "used" : q.macs ? "learned" : q.up === true ? "idle" : "unknown";
+    return { port: q.port, name: q.name || null, alias: q.alias || null, speed: q.speed || null, up: q.up, uplink: !!q.uplink, macs: q.macs || 0, nodes, targets, lines, state, node: nodes[0] || (q.uplink ? sw.parent : null) };
+  });
 }
 
 const NO_PLACEMENT = {
@@ -494,12 +753,23 @@ function netorbitDraw(model, cfg, opts) {
   cfg = cfg || {};
   opts = opts || {};
   const { hubs, devices, root } = model;
-  const L = opts.layout === "balloon" ? netorbitBalloonLayout(model, { aspect: opts.aspect }) : netorbitLayout(model, {});
+  const L = opts.layout === "balloon" ? netorbitBalloonLayout(model, { aspect: opts.aspect })
+    : opts.layout === "tree" ? netorbitTreeLayout(model, { aspect: opts.aspect })
+    : netorbitLayout(model, {});
   const pos = L.pos;
   const C = pos[root];
   const col = (s) => (s === "group" ? "#64748b" : (NO_STATUS[s] || NO_STATUS.unknown).color);
   const live = (s) => s === "online";
-  const fs = Math.max(9, Math.min(12.5, L.arc * 0.42));
+  // A line takes the color of its link speed where the switch reports one and the far end is answering; otherwise
+  // the status color. Set speed_colors: false to always use the status color.
+  const speeds = {};
+  const lineColor = (n, s) => {
+    const b = cfg.speed_colors !== false && live(s) ? noSpeed(n.port_speed) : null;
+    if (!b) return col(s);
+    speeds[b.label] = b;
+    return b.color;
+  };
+  const fs = L.tree ? 11.5 : Math.max(9, Math.min(12.5, L.arc * 0.42));
   const maxChars = L.maxChars || (L.N > 60 ? 16 : 22);
   const edit = !!opts.edit;
   const scene = { C, links: [], nodes: [], hubLabels: [], devLabels: [] };
@@ -510,19 +780,6 @@ function netorbitDraw(model, cfg, opts) {
     const cx = mx + (C.x - mx) * k, cy = my + (C.y - my) * k;
     return `M${p.x.toFixed(1)},${p.y.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${q.x.toFixed(1)},${q.y.toFixed(1)}`;
   };
-  let links = "";
-  const link = (k, cls, d, color) => {
-    links += `<path class="lk ${cls}" data-k="${noEsc(k)}" d="${d}" stroke="${color}"/>`;
-    scene.links.push({ k, cls, d, color });
-  };
-  Object.values(hubs).forEach((h) => {
-    if (h.key === root || !pos[h.key]) return;
-    const p = pos[hubs[h.parent] ? h.parent : root];
-    // The way back up from a branch is grey and dashed, whatever the state of the hub above.
-    const s = h.kind === "newhub" ? "new" : h.kind === "uphub" ? "group" : h.status;
-    const faint = h.kind === "group" ? "faint" : "strong";
-    link(h.key, `${faint} ${live(s) ? "live" : ""} ${h.kind === "newhub" || h.kind === "uphub" ? "dashed" : ""}`, curve(p, pos[h.key], 0), col(s));
-  });
   // The internet sits just above the router: green when public DNS servers answer, red when they
   // don't but the router does, grey when NetOrbit can't tell.
   const inet = model.internet;
@@ -534,13 +791,44 @@ function netorbitDraw(model, cfg, opts) {
     const clear = [-90, -125, -55].map((d) => (d * Math.PI) / 180).find((x) => gap(x) > 0.35);
     const a = clear === undefined ? -Math.PI / 2 : clear;
     pos.internet = { x: +(C.x + 62 * Math.cos(a)).toFixed(1), y: +(C.y + 62 * Math.sin(a)).toFixed(1) };
+  }
+  // No icon may cover another, in any layout: push apart anything that touches. The router stays put, hubs give
+  // way less than devices.
+  const discs = [];
+  Object.values(hubs).forEach((h) => discs.push({ k: h.key, r: h.key === root ? 32 : h.kind === "group" ? 19 : 25, w: h.key === root ? 0 : 3 }));
+  devices.forEach((d) => discs.push({ k: d.key, r: 15, w: 1 }));
+  if (inet) discs.push({ k: "internet", r: 16, w: 2 });
+  netorbitSeparate(pos, discs, 6, L.balloon || L.tree ? null : C);
+
+  let links = "";
+  const link = (k, cls, d, color) => {
+    links += `<path class="lk ${cls}" data-k="${noEsc(k)}" d="${d}" stroke="${color}"/>`;
+    scene.links.push({ k, cls, d, color });
+  };
+  const f1 = (v) => v.toFixed(1);
+  // Tree lines: square elbows, between levels for hubs and along a bus and a gutter for devices.
+  const elbowHub = (p, q, rp, rq) => `M${f1(p.x)},${f1(p.y + rp)} V${f1(q.elbow)} H${f1(q.x)} V${f1(q.y - rq)}`;
+  const elbowDev = (p, q) => `M${f1(p.x)},${f1(p.y)} V${f1(q.bus.y)} H${f1(q.bus.gutter)} V${f1(q.y)} H${f1(q.x - 15)}`;
+  const hubR = (k) => (k === root ? 32 : hubs[k] && hubs[k].kind === "group" ? 19 : 25);
+  Object.values(hubs).forEach((h) => {
+    if (h.key === root || !pos[h.key]) return;
+    const p = pos[hubs[h.parent] ? h.parent : root];
+    // The way back up from a branch is grey and dashed, whatever the state of the hub above.
+    const s = h.kind === "newhub" ? "new" : h.kind === "uphub" ? "group" : h.status;
+    const faint = h.kind === "group" ? "faint" : "strong";
+    const pk = hubs[h.parent] ? h.parent : root;
+    const d = L.tree && pos[h.key].elbow != null ? elbowHub(p, pos[h.key], hubR(pk), hubR(h.key)) : curve(p, pos[h.key], 0);
+    link(h.key, `${faint} ${live(s) ? "live" : ""} ${h.kind === "newhub" || h.kind === "uphub" ? "dashed" : ""}`, d, h.kind === "hub" ? lineColor(h, s) : col(s));
+  });
+  if (inet) {
     link("internet", `strong ${live(inet.status) ? "live" : ""} ${inet.status === "unknown" ? "dashed" : ""}`, `M${C.x},${C.y} L${pos.internet.x},${pos.internet.y}`, col(inet.status));
   }
   devices.forEach((d) => {
     const p = pos[d.key];
     if (!p || !pos[p.hub]) return;
     // In the balloon layout a device's link is a straight spoke from its own hub.
-    link(d.key, `${live(d.status) ? "live" : ""} ${d.kind === "new" ? "dashed" : ""} ${d.suggested ? "sug" : ""}`, curve(pos[p.hub], p, L.balloon ? 0 : undefined), d.suggested ? NO_SUGGEST.color : col(d.status));
+    const path = L.tree && p.bus ? elbowDev(pos[p.hub], p) : curve(pos[p.hub], p, L.balloon ? 0 : undefined);
+    link(d.key, `${live(d.status) ? "live" : ""} ${d.kind === "new" ? "dashed" : ""} ${d.suggested ? "sug" : ""}`, path, d.suggested ? NO_SUGGEST.color : lineColor(d, d.status));
   });
 
   // Icons are drawn as SVG paths, not <ha-icon> in a <foreignObject>: WebKit (Safari, the iOS/iPadOS companion
@@ -557,7 +845,7 @@ function netorbitDraw(model, cfg, opts) {
   let labels = "";
   // Text boxes of hub labels placed so far; on the radial map the router's label always sits right below it. In the
   // balloon layout the middle hub has devices round it, so its label picks a side like any other hub's.
-  const rootBelow = !L.balloon;
+  const rootBelow = !L.balloon && !L.tree;
   const placedLabels = rootBelow ? [{ x0: C.x - 45, y0: C.y + 32 + 5, x1: C.x + 45, y1: C.y + 32 + 30 }] : [];
   // There the Internet node and its label (to its right) count as taken too, so the router's label goes elsewhere.
   if (!rootBelow && pos.internet) placedLabels.push({ x0: pos.internet.x - 20, y0: pos.internet.y - 20, x1: pos.internet.x + 100, y1: pos.internet.y + 14 });
@@ -614,7 +902,11 @@ function netorbitDraw(model, cfg, opts) {
       { side: "right", x: p.x + r + 10, y1: p.y - 2, anchor: "start" },
       { side: "left", x: p.x - r - 10, y1: p.y - 2, anchor: "end" },
     ];
-    if (L.balloon) {
+    if (L.tree) {
+      // Devices hang below and the line from the parent comes in from above: right, then left.
+      const order = { right: 0, left: 1, above: 2, below: 3 };
+      sides.sort((s, t) => order[s.side] - order[t.side]);
+    } else if (L.balloon) {
       // Try the side facing the parent first: devices leave a gap there, and only the link to the parent crosses it.
       const back = p.a + Math.PI;
       const dir = { below: Math.PI / 2, above: -Math.PI / 2, right: 0, left: Math.PI };
@@ -630,7 +922,7 @@ function netorbitDraw(model, cfg, opts) {
     const target = edit && h.kind === "hub" ? "target" : "";
     gfx += `<g class="node hub ${isGroup ? "group" : ""} ${isUp ? "up" : ""} ${target}" data-key="${noEsc(h.key)}">` +
       (isGroup || isUp ? "" : `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r + 9}" class="halo" fill="${c}"/>`) +
-      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" class="disc ${isNew || isGroup || isUp ? "dashed" : ""} ${h.status === "stale" && !isUp ? "pulse" : ""}" stroke="${c}"/>` +
+      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}" class="disc ${isNew || isGroup || isUp ? "dashed" : ""} ${(h.status === "stale" || h.status === "offline") && !isUp ? "pulse" : ""}" stroke="${c}"/>` +
       iconFO(p, r, h.icon, c) + `</g>`;
     scene.nodes.push({ k: h.key, x: p.x, y: p.y, r, color: c, icon: h.icon, hub: true, root: isRoot, halo: !isGroup && !isUp, dashed: isNew || isGroup || isUp });
     // Hub labels go in their own layer, drawn after devices so nothing covers them.
@@ -651,24 +943,26 @@ function netorbitDraw(model, cfg, opts) {
     // Labels point away from the centre of the device's ring: the router, or in the balloon layout its own hub.
     const tr = p.r + 24;
     const ox = p.ox != null ? p.ox : C.x, oy = p.oy != null ? p.oy : C.y;
-    const tx = ox + tr * Math.cos(p.a), ty = oy + tr * Math.sin(p.a);
-    const rot = flip ? deg + 180 : deg;
+    // In the tree a label sits flat, centred under its device.
+    const tx = L.tree ? p.x : ox + tr * Math.cos(p.a), ty = L.tree ? p.y + 28 : oy + tr * Math.sin(p.a);
+    const rot = L.tree ? 0 : flip ? deg + 180 : deg;
+    const anchor = L.tree ? "middle" : flip ? "end" : "start";
     const pinned = edit && d.placement === "manual";
     const text = noTrunc(d.label, maxChars);
     gfx += `<g class="node dev ${d.status} ${d.sleepy ? "sleepy" : ""} ${d.pending ? "pending" : ""} ${pinned ? "pinned" : ""} ${edit && d.kind === "device" ? "draggable" : ""}" data-key="${noEsc(d.key)}">` +
       (d.pending ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="21" class="pendring"/>` : "") +
       (live(d.status) ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="21" class="halo" fill="${c}"/>` : "") +
       (d.suggested ? `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="21" class="sugring"/>` : "") +
-      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="15" class="disc ${d.status === "stale" ? "pulse" : ""} ${d.kind === "new" ? "dashed" : ""}" stroke="${c}"/>` +
+      `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="15" class="disc ${d.status === "stale" || d.status === "offline" ? "pulse" : ""} ${d.kind === "new" ? "dashed" : ""}" stroke="${c}"/>` +
       iconFO(p, 15, d.icon, c) +
       (d.sleepy ? `<circle cx="${(p.x + 11).toFixed(1)}" cy="${(p.y - 11).toFixed(1)}" r="5" class="zz"/>` : "") +
       // Pinned by hand (edit mode): blue fill, the outline keeps its status color, plus a pin badge.
       (pinned ? `<g class="pin" pointer-events="none"><circle cx="${(p.x - 13).toFixed(1)}" cy="${(p.y - 13).toFixed(1)}" r="8.5"/>` +
         `<path d="${NO_PIN_PATH}" transform="translate(${(p.x - 19).toFixed(1)} ${(p.y - 19).toFixed(1)}) scale(0.5) rotate(30 12 12)"/></g>` : "") +
-      `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" transform="rotate(${rot.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)})" text-anchor="${flip ? "end" : "start"}" dominant-baseline="middle" class="dlab" style="font-size:${fs.toFixed(1)}px${d.suggested ? `;fill:${NO_SUGGEST.light}` : ""}">${noEsc(text)}</text></g>`;
+      `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" transform="rotate(${rot.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)})" text-anchor="${anchor}" dominant-baseline="middle" class="dlab" style="font-size:${fs.toFixed(1)}px${d.suggested ? `;fill:${NO_SUGGEST.light}` : ""}">${noEsc(text)}</text></g>`;
     scene.nodes.push({ k: d.key, x: p.x, y: p.y, r: 15, color: c, icon: d.icon, halo: live(d.status), dashed: d.kind === "new", sleepy: d.sleepy });
-    scene.devLabels.push({ k: d.key, x: tx, y: ty, rot, anchor: flip ? "end" : "start", size: fs, text,
-      color: d.suggested ? NO_SUGGEST.light : ({ recent: "#fde68a", stale: "#fecaca", new: "#e9d5ff" }[d.status] || "#cbd5e1") });
+    scene.devLabels.push({ k: d.key, x: tx, y: ty, rot, anchor, size: fs, text,
+      color: d.suggested ? NO_SUGGEST.light : ({ recent: "#fde68a", stale: "#fecaca", offline: "#fecaca", gone: "#fed7aa", new: "#e9d5ff" }[d.status] || "#cbd5e1") });
   });
 
   if (inet) {
@@ -683,12 +977,14 @@ function netorbitDraw(model, cfg, opts) {
     scene.hubLabels.push({ k: "internet", x: ip.x + 24, y: ip.y + 5, text, anchor: "start", inet: true, color: inet.status === "stale" ? c : null });
   }
 
-  const counts = { online: 0, recent: 0, stale: 0, new: 0 };
+  const counts = { online: 0, recent: 0, stale: 0, offline: 0, gone: 0, new: 0 };
   devices.forEach((d) => {
     if (d.kind === "more") { d.members.forEach((m) => { if (counts[m.status] !== undefined) counts[m.status]++; }); return; }
     if (counts[d.status] !== undefined && !String(d.key).startsWith("sug:")) counts[d.status]++;
   });
-  return { L, pos, C, links, gfx, labels, counts, scene, view: L.view || null };
+  // Speed buckets drawn, fastest first, for the legend.
+  const speedList = NO_SPEEDS.filter((b) => speeds[b.label]);
+  return { L, pos, C, links, gfx, labels, counts, scene, view: L.view || null, speeds: speedList };
 }
 
 // ------------------------------------------------------------------ scanning
@@ -879,7 +1175,7 @@ function shareModel(model, opts) {
     const key = keyOf[h.key];
     const parent = h.key === root ? null : (keyOf[h.parent] || "h0");
     const label = h.kind === "group" ? h.label : hide ? hubType(h) : safe(h.label, hubType(h));
-    hubs[key] = { key, label, sort: hubRank[h.key], kind: h.kind, parent, link: parent, status: h.status, icon: h.icon, hub_type: NO_HUB_TYPE[h.hub_type] ? h.hub_type : undefined };
+    hubs[key] = { key, label, sort: hubRank[h.key], kind: h.kind, parent, link: parent, status: h.status, icon: h.icon, hub_type: NO_HUB_TYPE[h.hub_type] ? h.hub_type : undefined, port_speed: h.port_speed || null };
     if (h.kind === "group") hubs[key].count = 0;
   });
 
@@ -899,10 +1195,10 @@ function shareModel(model, opts) {
     const type = noShareType(d.icon);
     seen[type] = (seen[type] || 0) + 1;
     const generic = `${type} ${seen[type]}`;
-    return { key, kind: "device", label: hide ? generic : safe(d.label, generic), sort: devRank[d.key], link, parent: link, status: d.status, icon: d.icon, sleepy: !!d.sleepy };
+    return { key, kind: "device", label: hide ? generic : safe(d.label, generic), sort: devRank[d.key], link, parent: link, status: d.status, icon: d.icon, sleepy: !!d.sleepy, port_speed: d.port_speed || null };
   });
   const internet = model.internet ? { key: "internet", kind: "internet", label: "Internet", status: model.internet.status } : null;
-  return { hubs, devices, root: src[root] ? "h0" : null, summary: null, internet, suggestions: {}, title: hide ? "My home network" : null, sig: "" };
+  return { hubs, devices, root: src[root] ? "h0" : null, summary: null, internet, suggestions: {}, title: hide ? "My home network" : null, sig: "", labels: model.labels || null };
 }
 
 // Styles for the standalone share image (the card's own stylesheet doesn't come along).
@@ -910,7 +1206,7 @@ const NO_SHARE_CSS = `.ring{fill:none;stroke:rgba(148,163,184,.07);stroke-width:
   `.lk.faint{stroke-width:1.2;opacity:.25;stroke-dasharray:2 5}.lk.dashed{stroke-dasharray:3 6}.lk.live{opacity:.8}.disc{fill:#0f172a;stroke-width:2.2}` +
   `.disc.dashed{stroke-dasharray:4 4}.halo{opacity:.13;filter:url(#noblur)}.hlab{fill:#f1f5f9;font-size:15px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:#0b1220;stroke-width:4px}` +
   `.hlab.glab{fill:#cbd5e1;font-size:13px;font-weight:500}.hlab.ilab{font-size:13px}.hsub{fill:#94a3b8;font-size:12px;text-anchor:middle;paint-order:stroke;stroke:#0b1220;stroke-width:4px}` +
-  `.dlab{fill:#cbd5e1}.dev.recent .dlab{fill:#fde68a}.dev.stale .dlab{fill:#fecaca}.dev.sleepy:not(.online){opacity:.7}.zz{fill:#a78bfa;stroke:#0f172a;stroke-width:1.5}`;
+  `.dlab{fill:#cbd5e1}.dev.recent .dlab{fill:#fde68a}.dev.stale .dlab{fill:#fecaca}.dev.offline .dlab{fill:#fecaca}.dev.gone .dlab{fill:#fed7aa}.dev.sleepy:not(.online){opacity:.7}.zz{fill:#a78bfa;stroke:#0f172a;stroke-width:1.5}`;
 const NO_SHARE_FONT = "Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif";
 // Size of the share image and video frame in map units: a header band, the map (1140 x 1090) and a footer line.
 const NO_SHARE = { w: 1140, h: 1220, mapY: 80 };
@@ -927,11 +1223,21 @@ function noShareFrame(D) {
 }
 
 function noShareCounts(smodel) {
-  const counts = { online: 0, recent: 0, stale: 0 };
+  const counts = { online: 0, recent: 0, stale: 0, offline: 0, gone: 0 };
   smodel.devices.forEach((d) => {
     (d.kind === "more" ? d.members : [d]).forEach((m) => { if (counts[m.status] !== undefined) counts[m.status]++; });
   });
   return counts;
+}
+
+/** The status chips on a shared image or video, worst first: offline colors when the map uses them. */
+function noShareChips(counts) {
+  return counts.offline || counts.gone ? ["gone", "offline", "online"] : ["stale", "recent", "online"];
+}
+
+/** A status's name: the map's own (which knows its offline time) or the default. */
+function noStatusLabel(k, labels) {
+  return (labels && labels[k]) || (NO_STATUS[k] || NO_STATUS.unknown).label;
 }
 
 /** The share image as a standalone SVG document, built from a shareModel, in the layout on show (radial unless
@@ -943,8 +1249,8 @@ function netorbitShareSvg(smodel, title, layout) {
   const counts = noShareCounts(smodel);
   let chips = "";
   let x = W - 24;
-  ["stale", "recent", "online"].forEach((k) => {
-    const text = `${counts[k]} ${NO_STATUS[k].label}`;
+  noShareChips(counts).forEach((k) => {
+    const text = `${counts[k]} ${noStatusLabel(k, smodel.labels)}`;
     const w = Math.round(text.length * 8.3 + 38);
     x -= w;
     chips += `<rect x="${x}" y="22" width="${w}" height="34" rx="17" fill="rgba(148,163,184,.08)" stroke="rgba(148,163,184,.18)"/>` +
@@ -1017,8 +1323,8 @@ function netorbitPaintFrame(ctx, scene, t, o) {
     ctx.fillText(text, W - 24 - w + 36, 44.5);
   } else {
     let x = W - 24;
-    ["stale", "recent", "online"].forEach((s) => {
-      const text = `${o.counts[s]} ${NO_STATUS[s].label}`;
+    noShareChips(o.counts).forEach((s) => {
+      const text = `${o.counts[s]} ${noStatusLabel(s, o.labels)}`;
       const w = ctx.measureText(text).width + 40;
       x -= w;
       pill(x, 22, w, 34, "rgba(148,163,184,.08)", "rgba(148,163,184,.18)");
@@ -1251,7 +1557,8 @@ class NetOrbitCard extends HTMLElement {
 
   setConfig(config) {
     this._config = Object.assign(
-      { title: "Network", height: 900, show_ip: false, show_legend: true, hide_sleepy_offline: false, group_by_type: true, show_internet: true, zoom: true },
+      { title: "Network", height: 900, show_ip: false, show_legend: true, hide_sleepy_offline: false, group_by_type: true, show_internet: true, zoom: true,
+        offline_colors: true, offline_minutes: 60, speed_colors: true },
       config || {}
     );
     this._sig = "";
@@ -1268,12 +1575,29 @@ class NetOrbitCard extends HTMLElement {
   // this browser. The pick is saved per card (its dashboard view and its config), so it never reaches another card,
   // and editing the card's config starts again from `layout`.
   _layoutName() {
-    const own = this._config.layout === "balloon" ? "balloon" : "radial";
+    const known = (v) => v === "radial" || v === "balloon" || v === "tree";
+    const own = known(this._config.layout) ? this._config.layout : "radial";
     if (this._config.layout_toggle === false) return own;
     if (this._layoutOverride) return this._layoutOverride;
     let picked = null;
     try { picked = window.localStorage.getItem(this._layoutKey); } catch (e) { /* storage blocked */ }
-    return picked === "radial" || picked === "balloon" ? picked : own;
+    return known(picked) ? picked : own;
+  }
+
+  // Offline colors depend on the clock as well as on Home Assistant, so look again once a minute: a device that
+  // has been gone an hour turns from red to orange even when nothing else changes. Only redraws when it does.
+  connectedCallback() {
+    if (this._tick) return;
+    this._tick = setInterval(() => { if (this._hass && this.isConnected) this.hass = this._hass; }, 60000);
+  }
+
+  disconnectedCallback() {
+    if (this._tick) clearInterval(this._tick);
+    this._tick = null;
+  }
+
+  _offlineColors() {
+    return this._config.offline_colors !== false;
   }
 
   // The card's shape (width over height) for the balloon map to fill: its width against its maximum height.
@@ -1371,6 +1695,8 @@ class NetOrbitCard extends HTMLElement {
     let internet = null;
     let root = null;
     const sig = [];
+    const offline = this._offlineColors();
+    const now = Date.now();
     states.forEach((s) => {
       const a = s.attributes;
       if (a.kind === "summary") {
@@ -1394,7 +1720,10 @@ class NetOrbitCard extends HTMLElement {
         hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, icon,
         fqdn: a.fqdn, managed_by: a.managed_by, fields: a.fields || {}, first_seen: a.first_seen,
         status: NO_STATUS[s.state] ? s.state : "unknown",
+        ports: Array.isArray(a.ports) ? a.ports : null, port: a.port == null ? null : a.port,
+        port_name: a.port_name || null, port_speed: a.port_speed || null,
       };
+      if (offline) n.status = netorbitLiveStatus(n.status, n.last_seen, n.first_seen, now, cfg.offline_minutes);
       // A device just dropped on a hub is drawn there right away, with a "saving" ring, until
       // Home Assistant reports the new placement (or 10 s pass and the old one stands).
       const opt = this._optimistic && this._optimistic.get(n.key);
@@ -1403,7 +1732,10 @@ class NetOrbitCard extends HTMLElement {
         else { n.link = n.parent = opt.link; n.placement = "manual"; n.pending = true; }
       }
       // Free text is only shown in the details popup, but it is part of the signature so a saved edit redraws.
-      sig.push([n.key, n.status, n.link, n.label, n.mac, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0, n.fqdn || "", n.managed_by || "", JSON.stringify(n.fields)].join("~"));
+      // Ports go in by what the card draws from them (link state, speed, what is plugged in), not by how many
+      // addresses each has learned, which drifts all the time.
+      const portSig = n.ports ? n.ports.map((q) => [q.port, q.up, q.speed, q.uplink ? 1 : 0, (q.nodes || []).join(",")].join(":")).join(";") : "";
+      sig.push([n.key, n.status, n.link, n.label, n.mac, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0, n.fqdn || "", n.managed_by || "", JSON.stringify(n.fields), n.port || "", n.port_speed || "", portSig].join("~"));
       if (a.kind === "hub") {
         hubs[n.key] = n;
         if (!n.link && !root) root = n.key;
@@ -1412,7 +1744,8 @@ class NetOrbitCard extends HTMLElement {
       }
     });
     if (!root && Object.keys(hubs).length) root = Object.keys(hubs)[0];
-    if (!root) return { hubs, devices, root, summary, internet, sig: sig.join("|"), suggestions: {} };
+    const labels = offline ? { offline: "Offline", gone: `Offline ${noMinutes(cfg.offline_minutes)}+` } : null;
+    if (!root) return { hubs, devices, root, summary, internet, sig: sig.join("|"), suggestions: {}, labels };
 
     // Suggested hubs: mark the device if we track it, otherwise show it in the "new" bubble.
     const suggestions = {};
@@ -1454,7 +1787,7 @@ class NetOrbitCard extends HTMLElement {
     // Very large networks: keep problem devices visible, fold the rest into "+N more" per hub.
     const max = Number(cfg.max_devices) || 80;
     if (devices.length > max) {
-      const rank = { stale: 0, recent: 1, new: 2, unknown: 3, online: 4 };
+      const rank = { offline: 0, stale: 0, gone: 1, recent: 1, new: 2, unknown: 3, online: 4 };
       const byHub = {};
       devices.forEach((d) => (byHub[d.link] = (byHub[d.link] || []).concat(d)));
       const share = Math.max(3, Math.floor(max / Object.keys(byHub).length));
@@ -1473,7 +1806,7 @@ class NetOrbitCard extends HTMLElement {
       devices.length = 0;
       devices.push(...kept);
     }
-    return { hubs, devices, root, summary, internet, suggestions, sig: sig.join("|") };
+    return { hubs, devices, root, summary, internet, suggestions, sig: sig.join("|"), labels };
   }
 
   // mode: "none", "chip" (a later scan runs), "takeover" (the first scan runs) or "reveal" (the first map arrives
@@ -1501,7 +1834,9 @@ class NetOrbitCard extends HTMLElement {
     const counts = D.counts;
     const admin = this._isAdmin();
     const nSug = Object.keys(model.suggestions || {}).length;
-    const chip = (k) => `<span class="chip"><i style="background:${NO_STATUS[k].color}"></i>${counts[k]} ${NO_STATUS[k].label}</span>`;
+    const chip = (k) => `<span class="chip"><i style="background:${NO_STATUS[k].color}"></i>${counts[k]} ${noEsc(noStatusLabel(k, model.labels))}</span>`;
+    const offline = this._offlineColors();
+    const offMin = noMinutes(cfg.offline_minutes);
     const staleH = summary ? summary.attributes.stale_hours : 24;
     const grouped = Object.values(hubs).some((h) => h.kind === "group");
     const takeover = mode === "takeover";
@@ -1520,7 +1855,8 @@ class NetOrbitCard extends HTMLElement {
     const layoutSeg = intro || cfg.layout_toggle === false ? "" :
       `<span class="lay" role="group" aria-label="Layout">` +
       `<button data-l="radial" class="${layout === "radial" ? "on" : ""}" title="Every device on one ring round the router">Radial</button>` +
-      `<button data-l="balloon" class="${layout === "balloon" ? "on" : ""}" title="Each hub in the middle of its own devices">Balloon</button></span>`;
+      `<button data-l="balloon" class="${layout === "balloon" ? "on" : ""}" title="Each hub in the middle of its own devices">Balloon</button>` +
+      `<button data-l="tree" class="${layout === "tree" ? "on" : ""}" title="The router at the top, each hub below the one it connects through">Tree</button></span>`;
     // A branch on show on its own: the way back up, from the whole map down to this hub.
     const fullHubs = (this._full && this._full.hubs) || hubs;
     const crumbs = model.focus && !intro
@@ -1572,6 +1908,8 @@ class NetOrbitCard extends HTMLElement {
   .dlab { fill:#cbd5e1; }
   .dev.recent .dlab { fill:#fde68a; }
   .dev.stale .dlab { fill:#fecaca; }
+  .dev.offline .dlab { fill:#fecaca; }
+  .dev.gone .dlab { fill:#fed7aa; }
   .dev.new .dlab { fill:#e9d5ff; }
   .dev.sleepy:not(.online) { opacity:.7; }
   .zz { fill:#a78bfa; stroke:#0f172a; stroke-width:1.5; }
@@ -1623,6 +1961,30 @@ class NetOrbitCard extends HTMLElement {
   .legend { display:flex; flex-wrap:wrap; gap:14px; padding:2px 18px 14px; font-size:12px; color:#94a3b8; }
   .legend span { display:inline-flex; align-items:center; gap:6px; }
   .legend .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  .legend .bar { width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .legend .spd { color:#cbd5e1; }
+  /* A port picked in a switch's port view: the things on it and their lines stand out, the rest steps back. */
+  svg.map.hl-on .lk:not(.hl) { opacity:.07; }
+  svg.map.hl-on .node:not(.hl):not(.hlsrc) { opacity:.22; }
+  svg.map.hl-on .hlabels { opacity:.35; }
+  svg.map .lk.hl { opacity:1 !important; stroke-width:4.5 !important; animation:none; stroke-dasharray:none; filter:drop-shadow(0 0 4px currentColor); }
+  svg.map .node.hl .disc { stroke-width:5; }
+  svg.map .hlring { fill:none; stroke:#f8fafc; stroke-width:2; stroke-dasharray:4 4; animation: spin 4s linear infinite; transform-box:fill-box; transform-origin:center; pointer-events:none; }
+  .pop.ports { width:auto; min-width:260px; max-width:min(560px, calc(100% - 8px)); box-sizing:border-box; }
+  .face { margin-top:10px; padding:8px; border-radius:8px; background:#020617; border:1px solid rgba(148,163,184,.25); overflow-x:auto; }
+  .face .grid { display:grid; grid-auto-flow:column; grid-template-rows:repeat(var(--rows), 30px); grid-auto-columns:30px; gap:5px; width:max-content; }
+  .face button.pt { flex:none; width:30px; height:30px; padding:0; margin:0; border-radius:4px; font:inherit; font-size:10.5px; font-variant-numeric:tabular-nums; line-height:1; display:flex; align-items:center; justify-content:center; position:relative; cursor:pointer; color:#0b1220; border:1.5px solid transparent; background:#1e293b; }
+  .face button.pt.down { background:#111827; color:#475569; border-color:#1f2937; }
+  .face button.pt.idle { background:#0f172a; color:#86efac; border-color:rgba(52,211,153,.45); }
+  .face button.pt.unk { background:#0f172a; color:#cbd5e1; border-color:rgba(148,163,184,.55); border-style:dashed; }
+  .face button.pt.up { color:#0b1220; font-weight:700; }
+  .face button.pt.sel { outline:2px solid #f8fafc; outline-offset:2px; }
+  .face button.pt .ul { position:absolute; top:-2px; right:-1px; font-size:9px; color:#fbbf24; }
+  .face .keys { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:8px; font-size:11px; color:#94a3b8; }
+  .face .keys i { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin-right:4px; }
+  .pinfo { margin-top:10px; font-size:12.5px; line-height:1.45; min-height:36px; }
+  .pinfo .t { font-weight:600; color:#f1f5f9; }
+  .pinfo .mrow { padding:3px 2px; }
   .sharebtn { font:inherit; font-size:12.5px; display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:999px; border:1px solid rgba(148,163,184,.35); background:transparent; color:#e2e8f0; cursor:pointer; }
   .sharebtn ha-icon { --mdc-icon-size:16px; }
   .scanchip { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:#bfdbfe; background:rgba(37,99,235,.14); border:1px solid rgba(96,165,250,.45); padding:4px 11px 4px 8px; border-radius:999px; font-variant-numeric:tabular-nums; }
@@ -1694,7 +2056,7 @@ class NetOrbitCard extends HTMLElement {
 <ha-card class="${mode === "reveal" ? "revealing" : ""}">
   <div class="head">
     <div class="title"><ha-icon icon="mdi:orbit"></ha-icon>${noEsc(cfg.title)}</div>
-    ${takeover ? scanChip : `${chip("online")}${chip("recent")}${chip("stale")}${counts.new ? chip("new") : ""}
+    ${takeover ? scanChip : `${chip("online")}${offline ? chip("offline") + chip("gone") : chip("recent") + chip("stale")}${counts.new ? chip("new") : ""}
     ${nSug ? `<span class="chip sug"><i style="background:${NO_SUGGEST.color}"></i>${nSug} possible hub${nSug > 1 ? "s" : ""}</span>` : ""}
     ${layoutSeg}
     ${scanChip}
@@ -1718,8 +2080,13 @@ class NetOrbitCard extends HTMLElement {
   </div>
   ${cfg.show_legend ? `<div class="legend ${takeover ? "hide" : ""}">
     <span>Moving line = answering pings</span>
-    <span><i class="dot" style="background:${NO_STATUS.recent.color}"></i>Seen in the last ${noEsc(staleH)} h</span>
-    <span><i class="dot" style="background:${NO_STATUS.stale.color}"></i>Not seen for ${noEsc(staleH)} h+</span>
+    ${offline
+      ? `<span><i class="dot" style="background:${NO_STATUS.offline.color}"></i>Went offline (under ${noEsc(offMin)})</span>
+    <span><i class="dot" style="background:${NO_STATUS.gone.color}"></i>Not seen for ${noEsc(offMin)}+</span>`
+      : `<span><i class="dot" style="background:${NO_STATUS.recent.color}"></i>Seen in the last ${noEsc(staleH)} h</span>
+    <span><i class="dot" style="background:${NO_STATUS.stale.color}"></i>Not seen for ${noEsc(staleH)} h+</span>`}
+    ${D.speeds.length ? `<span class="spd">Line = link speed:</span>${D.speeds.map((b) => `<span><i class="bar" style="background:${b.color}"></i>${noEsc(b.label)}</span>`).join("")}` : ""}
+    ${Object.values(hubs).some((h) => h.ports && h.ports.length) ? `<span>Tap a switch to see its ports</span>` : ""}
     <span><i class="dot" style="background:#a78bfa"></i>Allowed to sleep</span>
     ${nSug ? `<span><i class="dot" style="background:${NO_SUGGEST.color}"></i>Might be a hub, tap to confirm</span>` : ""}
     ${grouped ? `<span>Grouped by type until NetOrbit knows where they connect</span>` : ""}
@@ -1904,7 +2271,7 @@ class NetOrbitCard extends HTMLElement {
     const phases = ["ping", "arp", "names", "snmp", "layout"];
     const frac = (t) => noClamp((t + PRE) / PRE);
     const o = {
-      title: this._shareTitle(hide), counts, frame: shareFrame,
+      title: this._shareTitle(hide), counts, frame: shareFrame, labels: smodel.labels,
       pct: (t) => frac(t) * 100,
       found: (t) => total * noEase(frac(t)),
       phase: (t) => NO_SCAN_PHASE[phases[Math.min(phases.length - 1, Math.floor(frac(t) * phases.length))]],
@@ -2274,6 +2641,7 @@ class NetOrbitCard extends HTMLElement {
         if (n.kind === "new") { this._newPopup(n, ev, wrap, place); return; }
         if (n.kind === "more") { this._morePopup(n, ev, wrap, place); return; }
         if (this._edit && n.kind === "hub") { this._hubPopup(n, ev, wrap, place, n.key === root, hubs, root); return; }
+        if (netorbitHasPorts(n)) { this._portsPopup(n, ev, wrap, place, hubs, all, col); return; }
         if (n.kind === "hub" || n.kind === "device") { this._detailsPopup(n, ev, wrap, place, hubs, all, col); return; }
         if (n.entity) this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId: n.entity }, bubbles: true, composed: true }));
       });
@@ -2432,6 +2800,7 @@ class NetOrbitCard extends HTMLElement {
       (n.vendor ? `<div><span class="k">Maker</span>${noEsc(n.vendor)}</div>` : "") +
       ((n.fqdn || n.hostname) && (n.fqdn || n.hostname) !== n.label ? `<div><span class="k">DNS name</span>${noEsc(n.fqdn || n.hostname)}</div>` : "") +
       (via ? `<div><span class="k">Via</span>${noEsc(via)}</div>` : "") +
+      (n.port ? `<div><span class="k">Port</span>${noEsc(noPortText(n))}</div>` : "") +
       (n.managed_by ? `<div><span class="k">Managed by</span>${noEsc(noTrunc(n.managed_by, 40))}</div>` : "") +
       (n.kind === "device" && n.placement ? `<div><span class="k">Placed</span>${noEsc(NO_PLACEMENT[n.placement] || n.placement)}</div>` : "") +
       `<div><span class="k">Last seen</span>${n.status === "online" ? "now" : noRel(n.last_seen)}</div>` +
@@ -2772,10 +3141,10 @@ class NetOrbitCard extends HTMLElement {
     const html =
       `<b>${noEsc(n.label)}</b><div class="muted">${noEsc(what)} · <span style="color:${col(n.status)}">${(NO_STATUS[n.status] || NO_STATUS.unknown).label}</span>${n.sleepy ? " · allowed to sleep" : ""}</div>` +
       `<div class="kv">${row("DNS name", dns && dns !== n.label ? noEsc(dns) : "")}${row("IP", noEsc(n.ip))}${row("MAC", noEsc(n.mac))}${row("Maker", noEsc(n.vendor))}</div>` +
-      `<div class="sec">Connection</div><div class="kv">${row("Via", noEsc(via))}${n.kind === "device" ? row("Placed", noEsc(NO_PLACEMENT[n.placement] || n.placement || "")) : ""}</div>` +
+      `<div class="sec">Connection</div><div class="kv">${row("Via", noEsc(via))}${n.port ? row("Port", noEsc(noPortText(n))) : ""}${n.kind === "device" ? row("Placed", noEsc(NO_PLACEMENT[n.placement] || n.placement || "")) : ""}</div>` +
       (managed || fields ? `<div class="sec">Fields</div><div class="kv">${row("Managed by", managed)}${fields}</div>` : "") +
       `<div class="sec">History</div><div class="kv">${row("First seen", n.first_seen ? noEsc(noRel(n.first_seen)) : "")}${row("Last seen", n.status === "online" ? "now" : noEsc(noRel(n.last_seen)))}${n.ip_changes ? row("IP changes", String(n.ip_changes)) : ""}</div>` +
-      `<div class="row">${admin ? `<button class="go ed">Edit</button>` : ""}${n.entity ? `<button class="info">More info</button>` : ""}<button class="x">Close</button></div>`;
+      `<div class="row">${admin ? `<button class="go ed">Edit</button>` : ""}${netorbitHasPorts(n) ? `<button class="pv">Ports</button>` : ""}${n.entity ? `<button class="info">More info</button>` : ""}<button class="x">Close</button></div>`;
     const pop = this._openPop(html, ev, wrap, place, 320, 360);
     pop.classList.add("det");
     this._liveDetails = { key: n.key, ev };
@@ -2799,6 +3168,151 @@ class NetOrbitCard extends HTMLElement {
       this._detailsPopup(target, ev, wrap, place, hubs, all, col);
     });
     if (q(".ed")) q(".ed").addEventListener("click", () => this._detailsEdit(n, ev, wrap, place, hubs, all, col));
+    if (q(".pv")) q(".pv").addEventListener("click", () => this._portsPopup(n, ev, wrap, place, hubs, all, col));
+  }
+
+  // ------------------------------------------------------------------ switch ports
+
+  // A switch's ports, drawn like its front panel: odd ports on top, even below, as most switches number them.
+  // Each port is colored by what it knows: its link speed when something is plugged in, a green outline for a
+  // live port with nothing NetOrbit tracks, dark for a port that is down. Tapping a port lights up what is plugged
+  // into it on the map, with the line to it, and lists it below.
+  _portsPopup(n, ev, wrap, place, hubs, all, col) {
+    const ports = netorbitPortView(n, all, hubs);
+    const many = ports.length > 8;
+    const cell = (q) => {
+      const b = q.node && noSpeed(q.speed);
+      const cls = q.state === "down" ? "down" : q.state === "used" ? "up" : q.state === "learned" ? "unk" : q.state === "idle" ? "idle" : "unk";
+      const bg = cls === "up" ? (b ? b.color : NO_STATUS.online.color) : "";
+      const nm = noPortName(q.port, q.name);
+      const tip = `Port ${q.port}${nm ? ` (${nm})` : ""}${q.speed ? ` · ${noSpeedText(q.speed)}` : ""}${q.uplink ? " · uplink" : ""}`;
+      return `<button class="pt ${cls}" data-p="${q.port}" title="${noEsc(tip)}" aria-label="${noEsc(tip)}"${bg ? ` style="background:${bg};border-color:${bg}"` : ""}>` +
+        `${q.port}${q.uplink ? `<span class="ul">▲</span>` : ""}</button>`;
+    };
+    const keys = `<div class="keys"><span><i style="background:${NO_STATUS.online.color}"></i>In use</span>` +
+      `<span><i style="border:1.5px solid rgba(52,211,153,.6)"></i>Link up, nothing tracked</span>` +
+      `<span><i style="border:1.5px dashed rgba(148,163,184,.7)"></i>Unknown device(s)</span>` +
+      `<span><i style="background:#111827;border:1px solid #334155"></i>Down</span><span><b style="color:#fbbf24">▲</b> Uplink</span></div>`;
+    const body = ports.length
+      ? `<div class="face"><div class="grid" style="--rows:${many ? 2 : 1}">${ports.map(cell).join("")}</div>${keys}</div>` +
+        `<div class="pinfo">Tap a port to see what is plugged into it.</div>`
+      : `<div class="muted" style="margin-top:8px">NetOrbit can't read this switch's ports. Turn on SNMP on the switch (read only) and in NetOrbit's settings, and they show here after the next scan.</div>`;
+    const html = `<b>${noEsc(n.label)}</b><div class="muted">${noEsc(NO_HUB_TYPE[n.hub_type] || "Switch")} · ${ports.length} port${ports.length === 1 ? "" : "s"}` +
+      ` · <span style="color:${col(n.status)}">${noEsc(noStatusLabel(n.status, this._model_ && this._model_.labels))}</span></div>${body}` +
+      `<div class="row"><button class="det">Details</button><button class="x">Close</button></div>`;
+    const pop = this._openPop(html, ev, wrap, place, many ? 440 : 300, 300);
+    pop.classList.add("ports");
+    this._fitPop(pop, wrap);
+    // Docked in the corner of the map furthest from the switch, so the map stays in view for the highlights.
+    this._dockPop(pop, wrap, [n.key]);
+    const q = (sel) => pop.querySelector(sel);
+    q(".det").addEventListener("click", () => { this._highlight(null); this._detailsPopup(n, ev, wrap, place, hubs, all, col); });
+    const info = q(".pinfo");
+    pop.querySelectorAll("button.pt").forEach((b) => b.addEventListener("click", () => {
+      const port = ports.find((x) => String(x.port) === b.dataset.p);
+      if (!port) return;
+      pop.querySelectorAll("button.pt.sel").forEach((x) => x.classList.remove("sel"));
+      b.classList.add("sel");
+      const shown = this._highlight(n.key, port.targets, port.lines);
+      // Move out of the way if what lit up is under the panel.
+      if (port.targets.length) this._dockPop(pop, wrap, port.targets.concat([n.key]), true);
+      const row = (k) => {
+        const t = all[k] || hubs[k];
+        if (!t) return "";
+        const off = shown.missing.indexOf(k) >= 0 ? ` <span class="muted">(not on the map right now)</span>` : "";
+        return `<div class="mrow" data-k="${noEsc(k)}"><i style="background:${col(t.status)}"></i>${noEsc(t.label)}${off}<span>${noEsc(t.kind === "hub" ? (NO_HUB_TYPE[t.hub_type] || "Hub") : (t.ip || ""))}</span></div>`;
+      };
+      const nm = noPortName(port.port, port.name);
+      const head = `<div class="t">Port ${port.port}${nm ? ` · ${noEsc(nm)}` : ""}</div>` +
+        `<div class="muted">${[port.state === "down" ? "Link down" : port.up === true ? "Link up" : "", port.speed ? noSpeedText(port.speed) : "", port.alias ? `"${noEsc(port.alias)}"` : ""].filter(Boolean).join(" · ")}</div>`;
+      let what;
+      if (port.uplink) what = `<div style="margin-top:4px">Uplink${port.targets.length ? ` to:` : "."}</div>${port.targets.map(row).join("")}`;
+      else if (port.targets.length) what = port.targets.map(row).join("");
+      else if (port.macs) what = `<div style="margin-top:4px">${port.macs} address${port.macs === 1 ? "" : "es"} seen here that NetOrbit doesn't track (an unmanaged switch or new devices?).</div>`;
+      else what = `<div style="margin-top:4px;color:#94a3b8">Nothing plugged in that NetOrbit knows of.</div>`;
+      info.innerHTML = head + what;
+      info.querySelectorAll(".mrow[data-k]").forEach((r) => r.addEventListener("click", () => {
+        const t = all[r.dataset.k];
+        if (!t) return;
+        this._highlight(null);
+        this._detailsPopup(t, ev, wrap, place, hubs, all, col);
+      }));
+    }));
+  }
+
+  // Put a popup in the corner of the map furthest from some nodes. `onlyIfCovering`: leave it where it is unless
+  // it covers one of them.
+  _dockPop(pop, wrap, keys, onlyIfCovering) {
+    const svg = this.shadowRoot.querySelector("svg.map");
+    if (!svg || !wrap.getBoundingClientRect) return;
+    const W = wrap.clientWidth, H = wrap.clientHeight, w = pop.offsetWidth, h = pop.offsetHeight;
+    if (!W || !H || !w || !h) return;
+    const box = wrap.getBoundingClientRect();
+    const pts = [];
+    keys.forEach((k) => {
+      const el = svg.querySelector(`.node[data-key="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(k) : k}"] circle.disc`);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      pts.push({ x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top, r: r.width / 2 + 6 });
+    });
+    if (!pts.length) return;
+    const covers = (x, y) => pts.some((p) => p.x + p.r > x && p.x - p.r < x + w && p.y + p.r > y && p.y - p.r < y + h);
+    if (onlyIfCovering && !covers(pop.offsetLeft, pop.offsetTop)) return;
+    const corners = [[6, 6], [W - w - 6, 6], [6, H - h - 6], [W - w - 6, H - h - 6]].map(([x, y]) => [Math.max(4, x), Math.max(4, y)]);
+    const score = ([x, y]) => (covers(x, y) ? -1e9 : 0) + Math.min(...pts.map((p) => Math.hypot(p.x - (x + w / 2), p.y - (y + h / 2))));
+    const best = corners.reduce((a, c) => (score(c) > score(a) ? c : a));
+    pop.style.left = best[0] + "px";
+    pop.style.top = best[1] + "px";
+  }
+
+  // Light up nodes and the lines to them, dimming the rest of the map. `src` (the switch) stays lit too. A node
+  // that isn't on the map right now (folded into "+N more", or outside the branch on show) lights up its bubble
+  // instead, and is reported back in `missing`. null clears the highlight.
+  _highlight(src, keys, lines) {
+    const svg = this.shadowRoot && this.shadowRoot.querySelector && this.shadowRoot.querySelector("svg.map");
+    const out = { missing: [] };
+    if (!svg) return out;
+    svg.classList.remove("hl-on");
+    svg.querySelectorAll(".hl, .hlsrc").forEach((el) => el.classList.remove("hl", "hlsrc"));
+    svg.querySelectorAll(".hlring").forEach((el) => el.remove());
+    if (!src) return out;
+    const esc = (k) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(k) : String(k).replace(/["\\]/g, "\\$&"));
+    const nodeEl = (k) => svg.querySelector(`.node[data-key="${esc(k)}"]`);
+    const firstNode = svg.querySelector(".node");
+    const lift = (k) => {
+      const lk = svg.querySelector(`path.lk[data-k="${esc(k)}"]`);
+      if (!lk) return false;
+      lk.classList.add("hl");
+      // Drawn last among the lines, so it sits on top of the others but still under the icons.
+      if (firstNode) svg.insertBefore(lk, firstNode);
+      return true;
+    };
+    svg.classList.add("hl-on");
+    const s = nodeEl(src);
+    if (s) s.classList.add("hlsrc");
+    (keys || []).forEach((k) => {
+      let el = nodeEl(k);
+      if (!el) {
+        // Folded into a "+N more" bubble on its hub.
+        const d = this._model_ && this._model_.devices.find((x) => x.kind === "more" && (x.members || []).some((m) => m.key === k));
+        el = d ? nodeEl(d.key) : null;
+        out.missing.push(k);
+        if (el) lift(d.key);
+      }
+      if (!el) return;
+      el.classList.add("hl");
+      const c = el.querySelector("circle.disc");
+      if (c) {
+        const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        ring.setAttribute("class", "hlring");
+        ring.setAttribute("cx", c.getAttribute("cx"));
+        ring.setAttribute("cy", c.getAttribute("cy"));
+        ring.setAttribute("r", String(Number(c.getAttribute("r")) + 9));
+        el.appendChild(ring);
+      }
+    });
+    (lines || []).forEach(lift);
+    return out;
   }
 
   // What a redraw needs to open the details popup again: which node, where the popup was, how far it was scrolled
@@ -2891,5 +3405,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/the-scott-davis/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
+if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitTreeLayout, netorbitSeparate, netorbitLiveStatus, netorbitPortView, netorbitHasPorts, noSpeed, noSpeedText, noMinutes, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

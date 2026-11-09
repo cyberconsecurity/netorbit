@@ -64,6 +64,8 @@ class NetOrbitNodeSensor(CoordinatorEntity[NetOrbitCoordinator], SensorEntity):
     _attr_options = STATUSES
     _attr_translation_key = "node"
     _attr_has_entity_name = True
+    # The port list of a big switch is long and changes with every link flap; history doesn't need it.
+    _unrecorded_attributes = frozenset({"ports"})
 
     def __init__(self, coordinator: NetOrbitCoordinator, key: str) -> None:
         super().__init__(coordinator)
@@ -119,6 +121,11 @@ class NetOrbitNodeSensor(CoordinatorEntity[NetOrbitCoordinator], SensorEntity):
             "ip_changes": node.ip_changes,
             "managed_by": node.managed_by,
             "fields": dict(node.fields),
+            # Switch ports (see topology.switch_ports) and the port this node is plugged into.
+            "ports": node.ports,
+            "port": node.port,
+            "port_name": node.port_name,
+            "port_speed": node.port_speed,
         }
 
     @callback

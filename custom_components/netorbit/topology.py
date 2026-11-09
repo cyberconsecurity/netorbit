@@ -161,3 +161,56 @@ def infer(
         hubs_here = by_port.get(loc, [])
         result.device_hub[key] = hubs_here[0] if len(hubs_here) == 1 else loc[0]
     return result
+
+
+def switch_ports(
+    table: dict[str, int],
+    own_mac: str | None,
+    parent_mac: str | None,
+    gateway_mac: str | None,
+    children: dict[str, tuple[str, str]],
+    info: dict[int, dict] | None = None,
+) -> list[dict]:
+    """What each port of one switch leads to, for the card's port view. Pure.
+
+    table: the switch's {mac: port}
+    own_mac: the switch's own MAC (its management address can show up on a port of its own)
+    parent_mac / gateway_mac: the hub above it and the router, used to find the uplink port
+    children: node key -> (mac, kind) for every hub and device the map places right under this switch
+    info: {port: {"name", "alias", "speed", "up"}} from the switch, when it publishes it
+
+    Returns one dict per port, in port order: port number, name, alias, speed (Mb/s), up, whether it is
+    the uplink, the node keys plugged into it (hubs first) and how many MAC addresses it has learned.
+    A port with many MACs and no child usually has something unmanaged behind it.
+    """
+    info = info or {}
+    uplink = None
+    for mac in (parent_mac, gateway_mac):
+        if mac and table.get(mac):
+            uplink = table[mac]
+            break
+    learned: dict[int, int] = {}
+    for mac, port in table.items():
+        if port and mac != own_mac:
+            learned[port] = learned.get(port, 0) + 1
+    on_port: dict[int, list[tuple[int, str]]] = {}
+    for key, (mac, kind) in children.items():
+        port = table.get(mac) if mac else None
+        if not port or port == uplink:
+            continue
+        on_port.setdefault(port, []).append((0 if kind == "hub" else 1, key))
+    numbers = sorted(set(info) | set(learned) | set(on_port) | ({uplink} if uplink else set()))
+    out: list[dict] = []
+    for port in numbers:
+        meta = info.get(port) or {}
+        out.append({
+            "port": port,
+            "name": meta.get("name"),
+            "alias": meta.get("alias"),
+            "speed": meta.get("speed"),
+            "up": meta.get("up"),
+            "uplink": port == uplink,
+            "nodes": [key for _rank, key in sorted(on_port.get(port, []))],
+            "macs": learned.get(port, 0),
+        })
+    return out

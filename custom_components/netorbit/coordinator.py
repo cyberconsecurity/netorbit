@@ -90,7 +90,7 @@ from .logic import (
 from .snmp import SnmpClient, is_grandstream
 from .mdns import mdns_label, mdns_name
 from .sources import client_access_points, ping_names_by_ip, registry_by_mac, ssdp_types_by_ip, tracker_names_by_mac
-from .topology import Topology, infer, macs_close
+from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,6 +135,10 @@ class Node:
     fqdn: str | None = None  # full reverse DNS name, when the network publishes one
     managed_by: str | None = None  # free text: a URL, or the name of the thing on the map that manages it
     fields: dict[str, str] = field(default_factory=dict)  # more free text, label -> value
+    ports: list[dict[str, Any]] | None = None  # switches with a readable MAC table: what each port leads to
+    port: int | None = None  # the port on the switch above it that it is plugged into, when known
+    port_name: str | None = None  # that port's name as the switch calls it ("Gi1/0/7")
+    port_speed: int | None = None  # that port's link speed in Mb/s, when the switch reports it
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -209,6 +213,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._sweep_lock = asyncio.Lock()
         self._snmp = SnmpClient(hass)
         self._tables: dict[str, dict[str, int]] = {}
+        self._port_info: dict[str, dict[int, Any]] = {}  # switch hub id -> {bridge port: PortInfo}
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
         self._ap_clients: dict[str, str] = {}  # client MAC -> hub id, from the AP's own SNMP client table
@@ -698,6 +703,13 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             table = await self._snmp.mac_table(host, comm)
             if table:
                 tables[hub["id"]] = table
+                # Names, speeds and link state of the ports, for the card's port view. A switch that
+                # won't say keeps what it said last time, so one slow answer doesn't blank the view.
+                ports = await self._snmp.port_info(host, comm)
+                if ports:
+                    self._port_info[hub["id"]] = ports
+        for gone in set(self._port_info) - set(tables):
+            self._port_info.pop(gone, None)
         return tables
 
     async def _read_ap_clients(self) -> dict[str, str]:
@@ -1078,6 +1090,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         if addressless:
             self._rollup_hubs(nodes, addressless)
 
+        self._attach_ports(nodes)
+
         if self.opts[CONF_CHECK_INTERNET]:
             # Above the router. Red (stale) only when the router answers and the internet doesn't;
             # with the router down too, NetOrbit can't tell, so the status is left unknown.
@@ -1118,6 +1132,32 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             nodes=nodes, new_devices=new_devices, suggested_hubs=suggestions, sources=sorted(sources),
             last_scan=self._last_sweep.isoformat() if self._last_sweep else None,
         )
+
+    def _attach_ports(self, nodes: dict[str, Node]) -> None:
+        """Give every switch with a MAC table its list of ports, and every node right under one the port
+        (and speed) it is plugged into. Uses the map as built, so a device placed by hand counts too."""
+        if not self._tables:
+            return
+        hub_macs = {k: v.lower() for k, v in self._hub_macs().items() if v}
+        children: dict[str, dict[str, tuple[str | None, str]]] = {}
+        for node in nodes.values():
+            if node.link and node.kind in ("hub", "device"):
+                children.setdefault(node.link, {})[node.key] = (node.mac.lower() if node.mac else None, node.kind)
+        for hub_id, table in self._tables.items():
+            node = nodes.get(f"hub:{hub_id}")
+            if node is None:
+                continue
+            info = {int(p): _port_dict(i) for p, i in (self._port_info.get(hub_id) or {}).items()}
+            ports = switch_ports(
+                table, hub_macs.get(hub_id), hub_macs.get(node.link) if node.link else None,
+                hub_macs.get(ROOT_HUB_ID), children.get(hub_id, {}), info,
+            )
+            node.ports = ports
+            for entry in ports:
+                for key in entry["nodes"]:
+                    child = nodes.get(key)
+                    if child is not None:
+                        child.port, child.port_name, child.port_speed = entry["port"], entry["name"], entry["speed"]
 
     @staticmethod
     def _rollup_hubs(nodes: dict[str, Node], addressless: dict[str, str]) -> None:
@@ -1301,3 +1341,10 @@ def _reverse_dns(ip: str) -> str | None:
 
 def _ip_sort(ip: str) -> tuple[int, ...]:
     return tuple(int(p) for p in ip.split("."))
+
+
+def _port_dict(info: Any) -> dict[str, Any]:
+    """A PortInfo (or a plain dict, as tests pass) as a dict."""
+    if isinstance(info, dict):
+        return info
+    return {"name": getattr(info, "name", None), "alias": getattr(info, "alias", None), "speed": getattr(info, "speed", None), "up": getattr(info, "up", None)}
