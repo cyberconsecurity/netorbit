@@ -80,6 +80,30 @@ function noHeight(v) {
   return s;
 }
 
+/** What a "Managed by" text points at: a web link, a node on the map, or just words. Exported for tests. */
+function noLink(text, nodes) {
+  const t = String(text || "").trim();
+  if (!t) return { kind: "none" };
+  if (/^https?:\/\/\S+$/i.test(t)) return { kind: "url", href: t };
+  const low = t.toLowerCase();
+  const hit = Object.values(nodes || {}).find((n) => n && (n.kind === "hub" || n.kind === "device") &&
+    [n.label, n.key, n.key && n.key.replace(/^hub:/, ""), n.ip, n.mac, n.hostname, n.fqdn].some((v) => v && String(v).toLowerCase() === low));
+  return hit ? { kind: "node", key: hit.key } : { kind: "text" };
+}
+
+/** "Label: value" per line -> {label: value}; a line without a colon is an error. Exported for tests. */
+function noParseFields(text) {
+  const out = {};
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const i = line.indexOf(":");
+    if (i < 1) throw new Error(`Write each field as "Label: value" (not "${noTrunc(line, 30)}")`);
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
 /** Pure layout: returns positions for hubs and leaves. Exported for tests. */
 function netorbitLayout(model, opts) {
   const o = Object.assign({ cx: 500, cy: 500, rDev: 370, rHub1: 135, hubStep: 125, rHubMax: 290, rGroup: 245 }, opts || {});
@@ -1188,6 +1212,8 @@ function noVideoType() {
 // The whole map in SVG units. Zooming shows a part of it with the same aspect ratio, so the card keeps its size.
 const NO_VIEW = { x: -70, y: -40, w: 1140, h: 1090 };
 const NO_ZOOM_MAX = 5;
+// A node popup left alone this long closes by itself (unless it holds unsaved changes); see _popAway.
+const NO_POP_IDLE_MS = 120000;
 
 /** The view after a zoom or pan gesture. Pure; exported for tests.
  *  `view` is the view the gesture started from (null = the whole map), `anchor` the map point that was under the
@@ -1287,7 +1313,10 @@ class NetOrbitCard extends HTMLElement {
     this._hass = hass;
     // Never redraw under the user's finger. A zoom gesture whose end was never seen (a lost pointer event)
     // stops holding updates back after 15 s.
-    if (this._drag || this._popOpen || this._revealing) return;
+    // The details popup only shows things, so the map keeps updating under it and each redraw opens it again from
+    // the new data (_reopenDetails). Every other popup holds updates until it closes, and so does a press inside
+    // the details popup, so a redraw never replaces the button under a finger.
+    if (this._drag || this._revealing || (this._popOpen && (!this._liveDetails || this._popPressed))) return;
     // _held is set only here: a drag, an open popup or a reveal redraws by itself when it finishes (a drop moves the device or clears _sig, closing the popup redraws).
     if (this._zooming && Date.now() - this._zooming < 15000) { this._held = true; return; }
     this._held = false;
@@ -1313,7 +1342,9 @@ class NetOrbitCard extends HTMLElement {
     const reveal = this._mode === "takeover" && !!model.root;
     this._mode = mode;
     if (reveal) { this._view = null; this._focus = null; }
+    const live = this._popOpen ? this._detailsState() : null;
     this._render(this._focus ? netorbitFocus(model, this._focus) : model, reveal ? "reveal" : mode);
+    if (live) this._reopenDetails(live);
     if (reveal) this._playReveal();
   }
 
@@ -1361,6 +1392,7 @@ class NetOrbitCard extends HTMLElement {
         key: a.node_key, entity: s.entity_id, label: reg.name || a.label || a.friendly_name, reg_name: reg.name || "", ip: a.ip, mac: a.mac, ip_changes: a.ip_changes || 0,
         kind: a.kind, link: a.link, parent: a.link, sleepy: a.sleepy === true, last_seen: a.last_seen,
         hub_type: a.hub_type, hostname: a.hostname, vendor: a.vendor, placement: a.placement, icon,
+        fqdn: a.fqdn, managed_by: a.managed_by, fields: a.fields || {}, first_seen: a.first_seen,
         status: NO_STATUS[s.state] ? s.state : "unknown",
       };
       // A device just dropped on a hub is drawn there right away, with a "saving" ring, until
@@ -1370,7 +1402,8 @@ class NetOrbitCard extends HTMLElement {
         if (n.link === opt.link || Date.now() - opt.t > 10000) this._optimistic.delete(n.key);
         else { n.link = n.parent = opt.link; n.placement = "manual"; n.pending = true; }
       }
-      sig.push([n.key, n.status, n.link, n.label, n.mac, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0].join("~"));
+      // Free text is only shown in the details popup, but it is part of the signature so a saved edit redraws.
+      sig.push([n.key, n.status, n.link, n.label, n.mac, icon, n.sleepy ? 1 : 0, n.placement, n.pending ? 1 : 0, n.fqdn || "", n.managed_by || "", JSON.stringify(n.fields)].join("~"));
       if (a.kind === "hub") {
         hubs[n.key] = n;
         if (!n.link && !root) root = n.key;
@@ -1573,6 +1606,15 @@ class NetOrbitCard extends HTMLElement {
   .pop button { flex:1; font:inherit; padding:7px 10px; border-radius:8px; border:1px solid rgba(148,163,184,.3); background:#1e293b; color:#e2e8f0; cursor:pointer; }
   .pop button.go { background:#2563eb; border-color:#2563eb; }
   .pop button.warn { border-color:rgba(248,113,113,.5); color:#fecaca; }
+  .pop.det { width:320px; max-width:calc(100% - 8px); max-height:calc(100% - 8px); overflow:auto; box-sizing:border-box; }
+  .pop .sec { margin-top:10px; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:#64748b; }
+  .pop .kv { display:grid; grid-template-columns:92px 1fr; gap:3px 8px; margin-top:4px; font-size:12.5px; line-height:1.4; }
+  .pop .kv .k { color:#94a3b8; }
+  .pop .kv .v { overflow-wrap:anywhere; }
+  .pop a { color:#93c5fd; text-decoration:none; }
+  .pop a:hover { text-decoration:underline; }
+  .pop textarea { width:100%; box-sizing:border-box; margin-top:4px; font:inherit; font-size:12.5px; padding:6px 8px; border-radius:8px; border:1px solid rgba(148,163,184,.3); background:#0b1220; color:#e2e8f0; resize:vertical; }
+  .pop .err { color:#fecaca; font-size:12px; margin-top:6px; min-height:0; }
   .mlist { max-height:240px; overflow:auto; margin-top:8px; }
   .mrow { display:flex; align-items:center; gap:8px; padding:4px 2px; cursor:pointer; border-radius:6px; }
   .mrow:hover { background:rgba(148,163,184,.1); }
@@ -2113,6 +2155,7 @@ class NetOrbitCard extends HTMLElement {
       if (y + h > r.height) y -= h + 20;
       el.style.left = Math.max(4, x) + "px"; el.style.top = Math.max(4, y) + "px";
     };
+    this._detailsCtx = { wrap, place, hubs, all, col };
     // A long-press redraws the map under the finger, so the click that ends it may never reach a node to be
     // swallowed. Any new press on the map means it's gone, so the next tap is a real one.
     if (svg) svg.addEventListener("pointerdown", () => { this._pressed = 0; }, true);
@@ -2231,6 +2274,7 @@ class NetOrbitCard extends HTMLElement {
         if (n.kind === "new") { this._newPopup(n, ev, wrap, place); return; }
         if (n.kind === "more") { this._morePopup(n, ev, wrap, place); return; }
         if (this._edit && n.kind === "hub") { this._hubPopup(n, ev, wrap, place, n.key === root, hubs, root); return; }
+        if (n.kind === "hub" || n.kind === "device") { this._detailsPopup(n, ev, wrap, place, hubs, all, col); return; }
         if (n.entity) this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId: n.entity }, bubbles: true, composed: true }));
       });
     });
@@ -2386,8 +2430,9 @@ class NetOrbitCard extends HTMLElement {
       (n.ip ? `<div><span class="k">IP</span>${noEsc(n.ip)}</div>` : "") +
       (n.mac ? `<div><span class="k">MAC</span>${noEsc(n.mac)}</div>` : "") +
       (n.vendor ? `<div><span class="k">Maker</span>${noEsc(n.vendor)}</div>` : "") +
-      (n.hostname && n.hostname !== n.label ? `<div><span class="k">Host</span>${noEsc(n.hostname)}</div>` : "") +
+      ((n.fqdn || n.hostname) && (n.fqdn || n.hostname) !== n.label ? `<div><span class="k">DNS name</span>${noEsc(n.fqdn || n.hostname)}</div>` : "") +
       (via ? `<div><span class="k">Via</span>${noEsc(via)}</div>` : "") +
+      (n.managed_by ? `<div><span class="k">Managed by</span>${noEsc(noTrunc(n.managed_by, 40))}</div>` : "") +
       (n.kind === "device" && n.placement ? `<div><span class="k">Placed</span>${noEsc(NO_PLACEMENT[n.placement] || n.placement)}</div>` : "") +
       `<div><span class="k">Last seen</span>${n.status === "online" ? "now" : noRel(n.last_seen)}</div>` +
       this._dhcpTip(n);
@@ -2437,7 +2482,12 @@ class NetOrbitCard extends HTMLElement {
   }
 
   _openPop(html, ev, wrap, place, w = 250, h = 200) {
-    this._closePop(wrap);
+    this._liveDetails = null; // set again by _detailsPopup
+    // Swap a popup that is already open for this one without redrawing the map. _closePop
+    // redraws, which replaces the shadow DOM: the new popup would then be appended to the old,
+    // detached tree while _popOpen stays set, and the card would stop updating until a reload.
+    const old = wrap.querySelector(".pop");
+    if (old) old.remove();
     const pop = document.createElement("div");
     pop.className = "pop";
     pop.innerHTML = html;
@@ -2446,6 +2496,7 @@ class NetOrbitCard extends HTMLElement {
     this._fitPop(pop, wrap);
     this._popOpen = true;
     pop.querySelectorAll(".x").forEach((b) => b.addEventListener("click", () => this._closePop(wrap)));
+    this._popAway(pop, wrap);
     return pop;
   }
 
@@ -2463,10 +2514,79 @@ class NetOrbitCard extends HTMLElement {
     pop.style.top = Math.max(4, top) + "px";
   }
 
-  _closePop(wrap) {
+  // The map doesn't update while a popup other than the details popup is open, so a popup must not stay open by
+  // accident (a wall panel).
+  // It closes on a tap outside it (a tap on another node opens that node's popup instead), on Escape, and after
+  // NO_POP_IDLE_MS without a touch. A form with changes not yet saved ignores outside taps and the idle timer:
+  // only Close, Escape or its own buttons end it. A popup that is no longer on the page (the card redrew under
+  // it) closes on any tap and on the timer, so the map never stays frozen behind it.
+  // `since`: when the popup was last touched, for the details popup opened again after a redraw, so redraws
+  // don't restart the idle timer.
+  _popAway(pop, wrap, since = 0) {
+    if (this._popOff) this._popOff();
+    let dirty = false;
+    let timer = null;
+    this._popLast = since || Date.now();
+    const keep = () => pop.isConnected && dirty;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (!keep()) this._closePop(wrap); }, Math.max(0, NO_POP_IDLE_MS - (Date.now() - this._popLast)));
+    };
+    const idle = () => { this._popLast = Date.now(); arm(); };
+    // On the click, not the pointerdown: closing redraws the card, and a redraw between pointerdown and click
+    // would replace the button under the finger and lose the tap (Share, Edit, the zoom buttons). The redraw
+    // also waits until that click has been handled; see _closePop.
+    const outside = (ev) => {
+      const path = ev.composedPath ? ev.composedPath() : [];
+      if (pop.isConnected && path.includes(pop)) return;
+      if (keep() || path.some((el) => el && el.classList && el.classList.contains("node"))) return;
+      this._closePop(wrap, true);
+    };
+    const esc = (ev) => { if (ev.key === "Escape") this._closePop(wrap); };
+    const changed = () => { dirty = true; idle(); };
+    // A press inside holds redraws (set hass) until its click has been handled; then the update that waited
+    // goes through.
+    const press = () => { this._popPressed = true; idle(); };
+    const release = () => {
+      if (!this._popPressed) return;
+      setTimeout(() => {
+        this._popPressed = false;
+        if (this._popOpen && this._liveDetails && this._hass) this.hass = this._hass;
+      }, 0);
+    };
+    const off = () => {
+      clearTimeout(timer);
+      document.removeEventListener("click", outside, true);
+      document.removeEventListener("keydown", esc, true);
+      document.removeEventListener("pointerup", release, true);
+      document.removeEventListener("pointercancel", release, true);
+      this._popPressed = false;
+      if (this._popOff === off) this._popOff = null;
+    };
+    document.addEventListener("click", outside, true);
+    document.addEventListener("keydown", esc, true);
+    document.addEventListener("pointerup", release, true);
+    document.addEventListener("pointercancel", release, true);
+    pop.addEventListener("pointerdown", press);
+    pop.addEventListener("keydown", idle);
+    pop.addEventListener("input", changed);
+    pop.addEventListener("change", changed);
+    this._popOff = off;
+    if (since) arm();
+    else idle();
+  }
+
+  // `later`: redraw after the current event has been handled, and not at all if it opened another popup.
+  _closePop(wrap, later = false) {
+    if (this._popOff) this._popOff();
+    this._liveDetails = null;
     const old = wrap.querySelector(".pop");
     if (old) old.remove();
-    if (this._popOpen) { this._popOpen = false; this._sig = ""; this.hass = this._hass; }
+    if (!this._popOpen) return;
+    this._popOpen = false;
+    this._sig = "";
+    if (later) setTimeout(() => { if (!this._popOpen) this.hass = this._hass; }, 0);
+    else this.hass = this._hass;
   }
 
   _hubOptions(hubs, current) {
@@ -2635,6 +2755,114 @@ class NetOrbitCard extends HTMLElement {
     }));
   }
 
+  // Everything NetOrbit knows about a hub or device, and (for admins) its name and free text to edit.
+  // `keep`: the state of the same popup before a redraw (see _detailsState), to open it again where it was.
+  _detailsPopup(n, ev, wrap, place, hubs, all, col, keep = null) {
+    const admin = this._isAdmin();
+    const dns = n.fqdn || n.hostname;
+    const via = n.kind === "hub" ? (hubs[n.parent] ? hubs[n.parent].label : "") : (hubs[n.link] && hubs[n.link].kind === "hub" ? hubs[n.link].label : "");
+    const row = (k, v) => (v ? `<span class="k">${noEsc(k)}</span><span class="v">${v}</span>` : "");
+    const link = noLink(n.managed_by, all);
+    const managed = !n.managed_by ? "" :
+      link.kind === "url" ? `<a href="${noEsc(link.href)}" target="_blank" rel="noopener noreferrer">${noEsc(n.managed_by)}</a>` :
+      link.kind === "node" ? `<a href="#" class="jump" data-key="${noEsc(link.key)}">${noEsc(n.managed_by)}</a> <span class="muted">on this map</span>` :
+      noEsc(n.managed_by);
+    const fields = Object.entries(n.fields || {}).map(([k, v]) => row(k, noEsc(v))).join("");
+    const what = n.kind === "hub" ? (NO_HUB_TYPE[n.hub_type] || "Hub") : "Device";
+    const html =
+      `<b>${noEsc(n.label)}</b><div class="muted">${noEsc(what)} · <span style="color:${col(n.status)}">${(NO_STATUS[n.status] || NO_STATUS.unknown).label}</span>${n.sleepy ? " · allowed to sleep" : ""}</div>` +
+      `<div class="kv">${row("DNS name", dns && dns !== n.label ? noEsc(dns) : "")}${row("IP", noEsc(n.ip))}${row("MAC", noEsc(n.mac))}${row("Maker", noEsc(n.vendor))}</div>` +
+      `<div class="sec">Connection</div><div class="kv">${row("Via", noEsc(via))}${n.kind === "device" ? row("Placed", noEsc(NO_PLACEMENT[n.placement] || n.placement || "")) : ""}</div>` +
+      (managed || fields ? `<div class="sec">Fields</div><div class="kv">${row("Managed by", managed)}${fields}</div>` : "") +
+      `<div class="sec">History</div><div class="kv">${row("First seen", n.first_seen ? noEsc(noRel(n.first_seen)) : "")}${row("Last seen", n.status === "online" ? "now" : noEsc(noRel(n.last_seen)))}${n.ip_changes ? row("IP changes", String(n.ip_changes)) : ""}</div>` +
+      `<div class="row">${admin ? `<button class="go ed">Edit</button>` : ""}${n.entity ? `<button class="info">More info</button>` : ""}<button class="x">Close</button></div>`;
+    const pop = this._openPop(html, ev, wrap, place, 320, 360);
+    pop.classList.add("det");
+    this._liveDetails = { key: n.key, ev };
+    if (keep) {
+      if (keep.left) pop.style.left = keep.left;
+      if (keep.top) pop.style.top = keep.top;
+      pop.scrollTop = keep.scroll || 0;
+      this._popAway(pop, wrap, keep.touched);
+    }
+    const q = (s) => pop.querySelector(s);
+    if (q(".info")) q(".info").addEventListener("click", () => {
+      this._closePop(wrap);
+      this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId: n.entity }, bubbles: true, composed: true }));
+    });
+    if (q(".jump")) q(".jump").addEventListener("click", (e) => {
+      e.preventDefault();
+      const target = all[q(".jump").dataset.key];
+      if (!target) { this._closePop(wrap); return; }
+      const el = this.shadowRoot.querySelector(`.node[data-key="${CSS.escape(target.key)}"]`);
+      if (el) { el.classList.add("hot"); setTimeout(() => el.classList.remove("hot"), 1800); }
+      this._detailsPopup(target, ev, wrap, place, hubs, all, col);
+    });
+    if (q(".ed")) q(".ed").addEventListener("click", () => this._detailsEdit(n, ev, wrap, place, hubs, all, col));
+  }
+
+  // What a redraw needs to open the details popup again: which node, where the popup was, how far it was scrolled
+  // and when it was last touched.
+  _detailsState() {
+    if (!this._liveDetails) return null;
+    const c = this._detailsCtx;
+    const pop = c && c.wrap.querySelector(".pop");
+    return {
+      key: this._liveDetails.key, ev: this._liveDetails.ev, touched: this._popLast,
+      left: pop ? pop.style.left : "", top: pop ? pop.style.top : "", scroll: pop ? pop.scrollTop : 0,
+    };
+  }
+
+  // After a redraw, the details popup again from the new data. A node no longer on the map closes it.
+  _reopenDetails(s) {
+    const c = this._detailsCtx;
+    const n = c && c.wrap.isConnected && c.all[s.key];
+    if (!n) {
+      if (this._popOff) this._popOff();
+      this._popOpen = false;
+      this._liveDetails = null;
+      return;
+    }
+    this._detailsPopup(n, s.ev, c.wrap, c.place, c.hubs, c.all, c.col, s);
+  }
+
+  _detailsEdit(n, ev, wrap, place, hubs, all, col) {
+    const text = Object.entries(n.fields || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
+    const pop = this._openPop(
+      `<b>Edit ${noEsc(n.label)}</b>` +
+      `<label>Name<input class="name" ${n.kind === "device" ? `maxlength="${NO_NAME_MAX}" placeholder="Automatic name" ` : ""}value="${noEsc(n.label)}"></label>` +
+      `<label>Managed by<input class="mb" value="${noEsc(n.managed_by || "")}" placeholder="A link, or the name of a hub or device on the map"></label>` +
+      `<label>Extra fields, one per line as Label: value<textarea class="fx" rows="4" placeholder="Location: Garage&#10;Serial: ABC123">${noEsc(text)}</textarea></label>` +
+      `<div class="err"></div>` +
+      `<div class="row"><button class="go save">Save</button><button class="back">Back</button><button class="x">Close</button></div>`,
+      ev, wrap, place, 320, 360
+    );
+    pop.classList.add("det");
+    const q = (s) => pop.querySelector(s);
+    q(".back").addEventListener("click", () => {
+      this._detailsPopup(n, ev, wrap, place, hubs, all, col);
+      // Catch up on updates held while the form was open; the redraw opens the details again from them.
+      if (this._hass) this.hass = this._hass;
+    });
+    q(".save").addEventListener("click", () => {
+      let fields;
+      try { fields = noParseFields(q(".fx").value); } catch (e) { q(".err").textContent = e.message; return; }
+      // The box shows every field, so what is missing now has been removed.
+      const data = { managed_by: q(".mb").value.trim(), fields: Object.assign(Object.fromEntries(Object.keys(n.fields || {}).map((k) => [k, null])), fields) };
+      const name = q(".name").value.trim().slice(0, NO_NAME_MAX);
+      const renamed = name !== String(n.label || "").trim().slice(0, NO_NAME_MAX);
+      if (n.kind === "hub") {
+        data.hub = n.key.replace(/^hub:/, "");
+        if (name && name !== n.label) data.name = name;
+      } else data.device = this._ref(n);
+      this._closePop(wrap);
+      const saved = this._call(n.kind === "hub" ? "update_hub" : "update_device", data);
+      // A device is renamed the same way as from its menu in Edit layout: an empty name goes back to the automatic
+      // one, and a name set in Home Assistant's entity settings (it wins on the map) changes too.
+      if (n.kind === "device" && renamed) saved.then((ok) => ok && this._rename(n, name));
+    });
+  }
+
   _summaryEntry() {
     const s = this._entities().find((x) => x.attributes.kind === "summary");
     return s ? s.attributes.config_entry_id : undefined;
@@ -2663,5 +2891,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/the-scott-davis/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac };
+if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

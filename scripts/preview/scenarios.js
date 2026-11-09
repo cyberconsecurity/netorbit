@@ -138,4 +138,14 @@
         .forEach((s, i) => { const parts = s.split(":"); const ic = parts.slice(-2).join(":"); const l = parts.slice(0, -2).join(":"); dev(l, ic, "gateway", i === 4 ? "recent" : "online", i === 4); });
     }), [], [["Mesh Node 3", "mesh_node", ["made by eero"]]]),
   };
+  // DNS names and free text on a few nodes of the full scenario, to preview the details popup.
+  (function () {
+    const full = window.NETORBIT_SCENARIOS.full;
+    const byLabel = (l) => Object.values(full).find((st) => st.attributes.label === l);
+    Object.assign(byLabel("Router").attributes, { fqdn: "edge.home.example", hostname: "edge", managed_by: "ISP support, ticket 4471" });
+    Object.assign(byLabel("Office Switch").attributes, { fqdn: "sw-office.home.example", hostname: "sw-office", fields: { Rack: "Office closet, shelf 2", Firmware: "7.5.15" } });
+    Object.assign(byLabel("NAS").attributes, { fqdn: "nas.home.example", hostname: "nas", managed_by: "Office Switch", first_seen: new Date(Date.now() - 90 * 86400e3).toISOString(),
+      fields: { Location: "Office closet", Serial: "NAS-00042", Notes: "Backups run at 02:00; spare disk in the drawer" } });
+    Object.assign(byLabel("Printer").attributes, { fqdn: "printer.home.example", hostname: "printer", managed_by: "https://192.0.2.30/", fields: { Toner: "ordered 2026-10" } });
+  })();
 })();

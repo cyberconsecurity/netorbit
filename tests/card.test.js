@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 // Minimal browser stand-ins so the card file can load under Node.
 globalThis.HTMLElement = class {};
-globalThis.customElements = { get: () => undefined, define: () => {} };
+globalThis.customElements = { get: () => undefined, define: (name, cls) => { globalThis.NetOrbitCard = cls; } };
 globalThis.window = globalThis;
 console.info = () => {};
 const { netorbitLayout, netorbitBalloonLayout, netorbitFocus, netorbitDraw, noPrivateMac } = require("../custom_components/netorbit/frontend/netorbit-card.js");
@@ -495,6 +495,139 @@ function pumpRun(late, opts) {
   return { painted, pushed, finished, clk };
 }
 
+test("a node popup closes on a tap outside, on Escape and when left alone; unsaved changes keep it open", () => {
+  const saved = { document: globalThis.document, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+  const on = {};
+  const timers = [];
+  globalThis.document = { addEventListener: (t, f) => (on[t] = f), removeEventListener: (t, f) => { if (on[t] === f) delete on[t]; } };
+  globalThis.setTimeout = (f, ms) => timers.push({ f, ms });
+  globalThis.clearTimeout = (id) => { if (id) timers[id - 1].f = null; };
+  try {
+    const make = () => {
+      const l = {};
+      return { isConnected: true, addEventListener: (t, f) => (l[t] = f), remove() { this.isConnected = false; }, fire: (t) => l[t]({}) };
+    };
+    const el = (cls) => ({ classList: { contains: (c) => c === cls } });
+    const tap = (path) => on.click({ composedPath: () => path });
+    const card = new globalThis.NetOrbitCard();
+    let redraws = 0;
+    Object.defineProperty(card, "hass", { get: () => undefined, set: () => redraws++ });
+    let pop = make();
+    const wrap = { querySelector: () => (pop.isConnected ? pop : null) };
+    const open = () => { pop = make(); card._popOpen = true; card._popAway(pop, wrap); };
+    const run = () => timers.splice(0).forEach((x) => x.f && x.f());
+
+    open();
+    tap([el("node")]);
+    assert.ok(pop.isConnected, "a tap on another node is left to that node, which swaps the popup");
+    tap([el("row"), pop]);
+    assert.ok(pop.isConnected, "a tap inside keeps it");
+    tap([el("sharebtn")]);
+    assert.ok(!pop.isConnected, "a tap outside closes it");
+    assert.ok(!on.click && !on.keydown && !card._popOff, "and lets go of the page");
+    assert.strictEqual(redraws, 0, "the redraw waits until the tap has been handled, so the button under it still works");
+    run();
+    assert.strictEqual(redraws, 1);
+
+    open();
+    tap([el("sharebtn")]);
+    card._popOpen = true; // that tap opened the share popup
+    run();
+    assert.strictEqual(redraws, 1, "no redraw under a popup the same tap opened");
+    card._popOpen = false;
+
+    open();
+    on.keydown({ key: "Escape" });
+    assert.ok(!pop.isConnected, "Escape closes it");
+    assert.strictEqual(redraws, 2);
+
+    open();
+    const t = timers.find((x) => x.f && x.ms > 119000);
+    t.f();
+    assert.ok(!pop.isConnected, "left alone for two minutes, it closes");
+    run();
+
+    open();
+    pop.fire("input");
+    tap([el("map")]);
+    timers.forEach((x) => x.f && x.f());
+    assert.ok(pop.isConnected, "a form with unsaved changes stays open");
+    on.keydown({ key: "Escape" });
+    assert.ok(!pop.isConnected, "until Escape (or Close, or its own buttons)");
+    run();
+
+    open();
+    pop.fire("input");
+    pop.isConnected = false; // the card redrew under it
+    tap([el("map")]);
+    assert.ok(!card._popOpen && !card._popOff, "a popup no longer on the page never keeps the map frozen");
+
+    open();
+    pop.fire("pointerdown");
+    assert.ok(card._popPressed, "a press inside holds redraws");
+    on.pointerup({});
+    assert.ok(card._popPressed, "until its click has been handled");
+    timers.filter((x) => x.f && x.ms === 0).forEach((x) => { const f = x.f; x.f = null; f(); });
+    assert.ok(!card._popPressed);
+    on.keydown({ key: "Escape" });
+    assert.ok(!on.pointerup && !on.pointercancel, "and lets go of the page when it closes");
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
+
+test("the details popup lets the map update and opens again from the new data; forms and presses hold updates", () => {
+  const st = (id, attrs, state = "online") => ({ entity_id: id, state, attributes: Object.assign({ netorbit: true }, attrs) });
+  const PC = "00:00:5e:00:53:10";
+  const list = (pc) => [
+    st("sensor.sum", { kind: "summary", config_entry_id: "E1" }, "1"),
+    st("sensor.r", { kind: "hub", node_key: "hub:gateway", label: "Router", hub_type: "router" }),
+    ...(pc ? [st("sensor.pc", { kind: "device", node_key: PC, mac: PC.toUpperCase(), link: "hub:gateway", label: "PC" }, pc)] : []),
+  ];
+  const hass = (l) => ({ states: Object.fromEntries(l.map((s) => [s.entity_id, s])), entities: {}, user: { is_admin: true } });
+  const card = new globalThis.NetOrbitCard();
+  card.shadowRoot = {};
+  card.setConfig({});
+  let drawn = 0;
+  const shown = [];
+  // What _render and _wire leave behind, without a DOM: the popup sat at 40,60 scrolled down 30 px.
+  const wrap = { isConnected: true, querySelector: () => ({ style: { left: "40px", top: "60px" }, scrollTop: 30 }) };
+  card._render = (m) => {
+    drawn++;
+    card._detailsCtx = { wrap, place: () => {}, hubs: m.hubs, all: Object.fromEntries(m.devices.map((d) => [d.key, d])), col: () => "" };
+  };
+  card._detailsPopup = (n, ev, w, place, hubs, all, col, keep) => {
+    shown.push([n.status, keep.left, keep.top, keep.scroll, keep.touched]);
+    card._liveDetails = { key: n.key, ev };
+  };
+  card.hass = hass(list("online"));
+  assert.strictEqual(drawn, 1);
+
+  card._popOpen = true;
+  card._liveDetails = { key: PC, ev: {} };
+  card._popLast = 1234;
+  card.hass = hass(list("stale"));
+  assert.strictEqual(drawn, 2, "the map updates under the details popup");
+  assert.deepStrictEqual(shown, [["stale", "40px", "60px", 30, 1234]], "and the popup opens again with the new status, where it was");
+
+  card._liveDetails = null; // a form (Edit, a menu) is open instead
+  card.hass = hass(list("online"));
+  assert.strictEqual(drawn, 2, "a form holds updates");
+
+  card._liveDetails = { key: PC, ev: {} };
+  card._popPressed = true;
+  card.hass = hass(list("online"));
+  assert.strictEqual(drawn, 2, "so does a press inside the details popup");
+  card._popPressed = false;
+  card.hass = card._hass;
+  assert.strictEqual(drawn, 3);
+  assert.strictEqual(shown[1][0], "online");
+
+  card.hass = hass(list(null));
+  assert.strictEqual(drawn, 4);
+  assert.ok(!card._popOpen && !card._liveDetails, "a device gone from the map closes its popup");
+});
+
 test("the video pump holds the first frame, then advances exactly 1/30 s per frame", () => {
   const { painted, pushed, finished } = pumpRun();
   assert.strictEqual(painted.length, 120);
@@ -543,6 +676,27 @@ test("stop() ends the pump and clears its timer", () => {
   assert.strictEqual(n, 5);
   assert.strictEqual(finished, 0);
   assert.strictEqual(clk.q.length, 0);
+});
+
+const { noLink, noParseFields } = require("../custom_components/netorbit/frontend/netorbit-card.js");
+
+test("managed by: a link, a node on the map, or words", () => {
+  const nodes = { "hub:core": { key: "hub:core", kind: "hub", label: "Core Switch", ip: "192.0.2.5" }, d1: { key: "d1", kind: "device", label: "NAS", mac: "00:00:5E:00:53:0A", hostname: "nas" } };
+  assert.deepStrictEqual(noLink("https://192.0.2.5/admin", nodes), { kind: "url", href: "https://192.0.2.5/admin" });
+  assert.deepStrictEqual(noLink("core switch", nodes), { kind: "node", key: "hub:core" });
+  assert.deepStrictEqual(noLink("core", nodes), { kind: "node", key: "hub:core" });
+  assert.deepStrictEqual(noLink("00:00:5e:00:53:0a", nodes), { kind: "node", key: "d1" });
+  assert.deepStrictEqual(noLink("nas", nodes), { kind: "node", key: "d1" });
+  assert.deepStrictEqual(noLink("ISP support", nodes), { kind: "text" });
+  assert.deepStrictEqual(noLink("javascript:alert(1)", nodes), { kind: "text" });
+  assert.deepStrictEqual(noLink("", nodes), { kind: "none" });
+});
+
+test("extra fields parse one Label: value per line", () => {
+  assert.deepStrictEqual(noParseFields("Location: Hall\n\nURL: https://192.0.2.1/x\nEmpty:"), { Location: "Hall", URL: "https://192.0.2.1/x", Empty: "" });
+  assert.throws(() => noParseFields("no separator"), /Label: value/);
+  assert.throws(() => noParseFields(": nothing before"), /Label: value/);
+  assert.deepStrictEqual(noParseFields(""), {});
 });
 
 // ---------------------------------------------------------------- the layout a card shows
