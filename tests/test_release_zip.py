@@ -26,10 +26,11 @@ def _index(steps: list[dict], text: str) -> int:
     return found[0]
 
 
-def test_hacs_json_uses_the_release_zip() -> None:
+def test_hacs_json_installs_from_source() -> None:
+    """This fork installs from the files at the release tag, so a release works without GitHub Actions
+    building netorbit.zip. The Release workflow still attaches the zip when Actions runs; nothing needs it."""
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert hacs["zip_release"] is True
-    assert hacs["filename"] == "netorbit.zip"
+    assert "zip_release" not in hacs and "filename" not in hacs
     assert {"name", "homeassistant", "render_readme"} <= hacs.keys()
 
 

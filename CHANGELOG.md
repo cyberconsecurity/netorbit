@@ -2,6 +2,9 @@
 
 ## 2026.11.0 (cyberconsecurity fork)
 
+### Changed
+- **Installs from source.** The fork no longer asks HACS or the Marketplace for a release zip, so a release installs whether or not GitHub Actions built `netorbit.zip`.
+
 ### Added
 - **Offline colors.** A device or hub that stops answering turns red straight away, then orange once it hasn't been seen for an hour. The header chips and legend follow. Card options `offline_minutes` (default 60) and `offline_colors: false` (back to the classic yellow/red by the stale window).
 - **Tree layout.** A third choice in the header switch (Radial | Balloon | Tree), or `layout: tree`. The router sits at the top, each hub below the one it connects through, and each hub's devices in a small grid under it, joined by square elbow lines. Every branch gets its own band of the map, so nothing overlaps.
