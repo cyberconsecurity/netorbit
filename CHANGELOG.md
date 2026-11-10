@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.3 (cyberconsecurity fork)
+
+### Added
+- **Several subnets on one map.** *Configure > Settings > Other subnets to include* takes up to four more subnets (an IoT VLAN, say), swept with the main one and drawn on the same map, under the same switches and access points. For a subnet Home Assistant only reaches through the router, NetOrbit takes each device's MAC address from the UniFi Network integration's client list (where ARP has none), so those devices get names and land where they connect. Diagnostics list only the extra subnets' sizes.
+
 ## 2026.11.2 (cyberconsecurity fork)
 
 ### Fixed

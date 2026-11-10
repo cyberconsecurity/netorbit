@@ -299,7 +299,7 @@ Import either from **Settings > Automations & scenes > Blueprints > Import bluep
 - Phones and laptops often use a private MAC address per network. Those are ignored by default since they can change, and they roam between access points anyway.
 - If an access point and wired devices share one switch port through an unmanaged switch, the switch can't tell them apart, so those wired devices may be drawn under the access point. Move them by hand if it matters to you.
 - Placements from pasted lists are a snapshot. TVs, cameras and smart home gear stay put, so that's fine for them.
-- IPv4 only, up to 1024 hosts per entry. Add one entry per subnet if you have several.
+- IPv4 only, up to 1024 hosts per subnet. To draw several subnets (VLANs) on one map, list them under **Configure > Settings > Other subnets to include** (up to 4). NetOrbit needs each device's MAC address: on a subnet Home Assistant has an address on it reads them itself, and on one it only reaches through the router it takes them from the UniFi Network integration, so devices there show only when that integration is set up. You can also add a separate NetOrbit entry per subnet and pick one per card with `device_id`.
 
 <p align="right"><sub><a href="#netorbit">back to the map</a></sub></p>
 

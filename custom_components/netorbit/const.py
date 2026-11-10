@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "netorbit"
-VERSION: Final = "2026.11.2"
+VERSION: Final = "2026.11.3"
 
 # Config entry data
 CONF_SUBNET: Final = "subnet"
+# More subnets swept onto the same map (VLANs). Options, so they can be changed after setup.
+CONF_EXTRA_SUBNETS: Final = "extra_subnets"
+MAX_EXTRA_SUBNETS: Final = 4
 CONF_GATEWAY: Final = "gateway"
 
 # Options

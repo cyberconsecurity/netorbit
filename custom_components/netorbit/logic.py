@@ -234,6 +234,28 @@ def validate_subnet(subnet: str, max_hosts: int) -> str:
     return str(net)
 
 
+def parse_subnets(text: str | list[str] | None, max_hosts: int, max_count: int) -> list[str]:
+    """Subnets typed as a list ("192.0.2.0/24, 198.51.100.0/24", one per line, or a list), canonical and without
+    repeats. Raises ValueError("invalid"), ("too_large") or ("too_many")."""
+    if not text:
+        return []
+    parts = text if isinstance(text, list) else re.split(r"[\s,;]+", text)
+    out: list[str] = []
+    for part in parts:
+        part = str(part).strip()
+        if not part:
+            continue
+        try:
+            net = validate_subnet(part, max_hosts)
+        except ValueError as err:
+            raise ValueError("too_large" if str(err) == "too_large" else "invalid") from err
+        if net not in out:
+            out.append(net)
+    if len(out) > max_count:
+        raise ValueError("too_many")
+    return out
+
+
 _ANY_MAC_RE = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4})(?![0-9A-Fa-f])")
 _ANY_IP_RE = re.compile(r"(?<![\d.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?![\d.])")
 

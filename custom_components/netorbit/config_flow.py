@@ -24,6 +24,7 @@ from .const import (
     CONF_MODE,
     CONF_PING_INTERVAL,
     CONF_PREFER_DNS,
+    CONF_EXTRA_SUBNETS,
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
     CONF_STALE_HOURS,
@@ -36,6 +37,7 @@ from .const import (
     DOMAIN,
     HUB_ROUTER,
     HUB_TYPES,
+    MAX_EXTRA_SUBNETS,
     MAX_HOSTS,
     MIN_PING_INTERVAL,
     MODES,
@@ -43,7 +45,7 @@ from .const import (
 )
 from . import manage
 from .coordinator import options_with_defaults
-from .logic import extract_addresses, normalize_mac, validate_subnet
+from .logic import extract_addresses, normalize_mac, parse_subnets, validate_subnet
 
 # Shown in the "setup finished" dialog (translations can't contain URLs, so it's a placeholder).
 GUIDE_URL = "https://github.com/the-scott-davis/netorbit#add-the-map-to-a-dashboard"
@@ -202,7 +204,14 @@ class NetOrbitOptionsFlow(OptionsFlow):
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        extra: list[str] = []
         if user_input is not None:
+            try:
+                extra = parse_subnets(user_input.get(CONF_EXTRA_SUBNETS) or "", MAX_HOSTS, MAX_EXTRA_SUBNETS)
+            except ValueError as err:
+                errors[CONF_EXTRA_SUBNETS] = {"too_large": "subnet_too_large", "too_many": "too_many_subnets"}.get(str(err), "invalid_subnet")
+        if user_input is not None and not errors:
             self.opts.update(
                 {
                     CONF_MODE: user_input[CONF_MODE],
@@ -216,6 +225,7 @@ class NetOrbitOptionsFlow(OptionsFlow):
                     CONF_SNMP_ENABLED: user_input[CONF_SNMP_ENABLED],
                     CONF_SNMP_COMMUNITY: (user_input.get(CONF_SNMP_COMMUNITY) or "").strip(),
                     CONF_PREFER_DNS: user_input[CONF_PREFER_DNS],
+                    CONF_EXTRA_SUBNETS: extra,
                 }
             )
             return self._save()
@@ -235,9 +245,13 @@ class NetOrbitOptionsFlow(OptionsFlow):
                 vol.Optional(CONF_SNMP_COMMUNITY, description={"suggested_value": o.get(CONF_SNMP_COMMUNITY) or None}): sel.TextSelector(
                     sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD)
                 ),
+                vol.Optional(
+                    CONF_EXTRA_SUBNETS,
+                    description={"suggested_value": (user_input or {}).get(CONF_EXTRA_SUBNETS) or ", ".join(o.get(CONF_EXTRA_SUBNETS) or []) or None},
+                ): str,
             }
         )
-        return self.async_show_form(step_id="settings", data_schema=schema)
+        return self.async_show_form(step_id="settings", data_schema=schema, errors=errors)
 
     # ----- hubs ------------------------------------------------------------------
 

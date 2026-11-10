@@ -37,6 +37,7 @@ from .const import (
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
     CONF_STALE_HOURS,
+    CONF_EXTRA_SUBNETS,
     CONF_SUBNET,
     DEFAULT_AUTO_HUBS,
     DEFAULT_DISCOVERY_INTERVAL,
@@ -89,7 +90,15 @@ from .logic import (
 )
 from .snmp import SnmpClient, is_grandstream
 from .mdns import mdns_label, mdns_name
-from .sources import client_access_points, ping_names_by_ip, registry_by_mac, ssdp_types_by_ip, tracker_names_by_mac, unifi_network
+from .sources import (
+    client_access_points,
+    ping_names_by_ip,
+    registry_by_mac,
+    ssdp_types_by_ip,
+    tracker_names_by_mac,
+    unifi_client_ips,
+    unifi_network,
+)
 from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,6 +177,7 @@ def options_with_defaults(entry: ConfigEntry) -> dict[str, Any]:
     opts.setdefault(CONF_SNMP_COMMUNITY, "")
     opts.setdefault(CONF_GROUP_BY_TYPE, True)
     opts.setdefault(CONF_CHECK_INTERNET, True)
+    opts.setdefault(CONF_EXTRA_SUBNETS, [])
     opts.setdefault(CONF_PREFER_DNS, DEFAULT_PREFER_DNS)
     opts.setdefault(CONF_HUBS, [])
     opts.setdefault(CONF_DEVICES, {})
@@ -385,7 +395,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
 
         async with self._sweep_lock, self._scanning():
             self._force_sweep = False
-            hosts = subnet_hosts(self.subnet)
+            hosts = self._all_hosts()
             results = await async_multiping(
                 hosts, count=1, timeout=SWEEP_TIMEOUT, concurrent_tasks=128, privileged=self._privileged
             )
@@ -401,6 +411,11 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             first_run = not self._initialized
             fresh: list[str] = []
             host_set = self._subnet_set(hosts)
+            # Devices on a subnet Home Assistant reaches only through the router never get an ARP entry here. The
+            # UniFi controller knows their MACs, so take them from it (only where ARP has nothing).
+            for ip, mac in unifi_client_ips(self.hass).items():
+                if ip in host_set and ip not in arp:
+                    arp[ip] = mac
 
             # One IP per MAC. Right after a DHCP change the ARP table can still hold the old
             # address too, so prefer the address that actually answered.
@@ -484,12 +499,12 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("NetOrbit: can't read network adapters: %s", err)
             return {}
-        net = ipaddress.ip_network(self.subnet, strict=False)
+        nets = [ipaddress.ip_network(s, strict=False) for s in self.subnets]
         wanted: dict[str, str] = {}
         for adapter in adapters:
             for addr in adapter.get("ipv4") or []:
                 try:
-                    if ipaddress.ip_address(addr["address"]) in net:
+                    if any(ipaddress.ip_address(addr["address"]) in net for net in nets):
                         wanted[addr["address"]] = adapter["name"]
                 except (KeyError, ValueError):
                     continue
@@ -574,10 +589,26 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self.internal_update = True
         self.hass.config_entries.async_update_entry(self.config_entry, options=opts)
 
+    @property
+    def subnets(self) -> list[str]:
+        """The subnet set up first, then any others added in Settings."""
+        return [self.subnet] + [s for s in self.opts.get(CONF_EXTRA_SUBNETS) or [] if s != self.subnet]
+
+    def _all_hosts(self) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for net in self.subnets:
+            for host in subnet_hosts(net):
+                if host not in seen:
+                    seen.add(host)
+                    out.append(host)
+        return out
+
     def _subnet_set(self, hosts: list[str]) -> set[str]:
+        key = tuple(self.subnets)
         cached = getattr(self, "_hosts_cache", None)
-        if cached is None or cached[0] != self.subnet:
-            cached = (self.subnet, set(hosts))
+        if cached is None or cached[0] != key:
+            cached = (key, set(hosts))
             self._hosts_cache = cached
         return cached[1]
 

@@ -15,6 +15,7 @@ NetOrbit draws a map the moment you add it. How much of it is right on its own d
 
 You can mix these. Anything you place by hand always wins over automatic placement.
 
+
 ## 1. Let your router or controller integration do it
 
 If Home Assistant already has an integration for your router or Wi-Fi system, NetOrbit reads what it knows:
@@ -70,6 +71,12 @@ Alongside the address table, NetOrbit reads each switch's port list: the port na
 - Use a community made of **letters and numbers only**. Some switches accept symbols in their web page but quietly ignore a community containing `#` or `@`.
 - Changing it from "public" is a good idea; treat it like a password. NetOrbit stores it with your Home Assistant config and leaves it out of diagnostics downloads.
 - Read-only is all NetOrbit needs. If your switch has a read-write community you don't use, turn it off.
+
+### Several subnets (VLANs) on one map
+
+If your devices are spread over more than one subnet, such as a main network and an IoT VLAN, go to **Settings > Devices & services > NetOrbit > Configure > Settings** and list the others under **Other subnets to include**, separated by commas (for example `198.51.100.0/24`). Up to four, each up to 1024 addresses. They are swept with the main subnet and drawn on the same map.
+
+NetOrbit tracks devices by MAC address. If Home Assistant has an address on that subnet (for example a VLAN interface under **Settings > System > Network**), it reads the MACs itself. If it only reaches the subnet through your router, it takes them from the UniFi Network integration, so set that up first; without it, devices on a routed subnet can't be tracked and stay off the map.
 
 ## 3. Finish the rest by hand (about a minute)
 

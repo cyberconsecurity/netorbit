@@ -168,26 +168,44 @@ def unifi_network(hass: HomeAssistant, now: float | None = None) -> tuple[dict[s
     Read only, from what the integration already holds in memory; nothing is sent to the controller. Any change in
     the integration's internals just leaves both maps empty, so NetOrbit falls back to the switch tables.
     """
+    aps, ips, _ = _unifi_read(hass, now)
+    return aps, ips
+
+
+def unifi_client_ips(hass: HomeAssistant, now: float | None = None) -> dict[str, str]:
+    """{IP: MAC} of every client the UniFi controller has seen lately, wired or wireless. Fills in MACs that ARP can't
+    give, for subnets Home Assistant reaches only through the router."""
+    return _unifi_read(hass, now)[2]
+
+
+def _unifi_read(hass: HomeAssistant, now: float | None) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     aps: dict[str, str] = {}
     ips: dict[str, str] = {}
+    client_ips: dict[str, str] = {}
     now = time.time() if now is None else now
     try:
         entries = hass.config_entries.async_entries("unifi")
     except Exception:  # noqa: BLE001
-        return aps, ips
+        return aps, ips, client_ips
     for entry in entries:
         api = getattr(getattr(entry, "runtime_data", None), "api", None)
         if api is None:
             continue
         try:
             for raw in _unifi_raw(getattr(api, "clients", None)):
-                if raw.get("is_wired"):
-                    continue
                 seen = raw.get("last_seen")
                 if isinstance(seen, (int, float)) and now - seen > UNIFI_CLIENT_FRESH:
                     continue
-                mac, ap = normalize_mac(raw.get("mac")), normalize_mac(raw.get("ap_mac"))
-                if mac and ap:
+                mac = normalize_mac(raw.get("mac"))
+                if not mac:
+                    continue
+                ip = raw.get("ip")
+                if isinstance(ip, str) and ip:
+                    client_ips[ip] = mac
+                if raw.get("is_wired"):
+                    continue
+                ap = normalize_mac(raw.get("ap_mac"))
+                if ap:
                     aps[mac] = ap
             for raw in _unifi_raw(getattr(api, "devices", None)):
                 mac, ip = normalize_mac(raw.get("mac")), raw.get("ip")
@@ -195,7 +213,7 @@ def unifi_network(hass: HomeAssistant, now: float | None = None) -> tuple[dict[s
                     ips[mac] = ip
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("NetOrbit couldn't read the UniFi client list: %s", err)
-    return aps, ips
+    return aps, ips, client_ips
 
 
 def _unifi_raw(handler: Any) -> list[dict[str, Any]]:

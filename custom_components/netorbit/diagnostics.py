@@ -53,6 +53,8 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: NetOrbi
         "automatic_sources": data.sources if data else [],
         "suggested_hubs": len(data.suggested_hubs) if data else 0,
         "subnet_prefix": entry.data.get("subnet", "").split("/")[-1],
+        # How many other subnets are swept and their sizes; never the addresses.
+        "extra_subnet_prefixes": [str(n).split("/")[-1] for n in (entry.options.get("extra_subnets") or [])],
         "hubs": [
             {"id": hub_alias[h["id"]], "type": h.get("type"), "parent": hub_alias.get(h.get("parent") or "", None), "has_host": bool(h.get("host"))}
             for h in opts[CONF_HUBS]
