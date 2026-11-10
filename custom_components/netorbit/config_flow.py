@@ -24,6 +24,7 @@ from .const import (
     CONF_MODE,
     CONF_PING_INTERVAL,
     CONF_PREFER_DNS,
+    CONF_CONTROLLER_PRESENCE,
     CONF_EXTRA_SUBNETS,
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
@@ -226,6 +227,7 @@ class NetOrbitOptionsFlow(OptionsFlow):
                     CONF_SNMP_COMMUNITY: (user_input.get(CONF_SNMP_COMMUNITY) or "").strip(),
                     CONF_PREFER_DNS: user_input[CONF_PREFER_DNS],
                     CONF_EXTRA_SUBNETS: extra,
+                    CONF_CONTROLLER_PRESENCE: user_input.get(CONF_CONTROLLER_PRESENCE, True),
                 }
             )
             return self._save()
@@ -245,6 +247,7 @@ class NetOrbitOptionsFlow(OptionsFlow):
                 vol.Optional(CONF_SNMP_COMMUNITY, description={"suggested_value": o.get(CONF_SNMP_COMMUNITY) or None}): sel.TextSelector(
                     sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD)
                 ),
+                vol.Required(CONF_CONTROLLER_PRESENCE, default=o.get(CONF_CONTROLLER_PRESENCE, True)): bool,
                 vol.Optional(
                     CONF_EXTRA_SUBNETS,
                     description={"suggested_value": (user_input or {}).get(CONF_EXTRA_SUBNETS) or ", ".join(o.get(CONF_EXTRA_SUBNETS) or []) or None},

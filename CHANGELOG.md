@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.4 (cyberconsecurity fork)
+
+### Added
+- **Online by UniFi as well as by ping.** A device the UniFi Network integration heard from in the last 5 minutes, or an AP or switch it reports as connected, shows as online even when it ignores pings (Echo speakers in power save, some cameras). Pings still count as before. *Configure > Settings > Count devices your Wi-Fi system sees as online*, on by default; turn it off to go by pings alone.
+
 ## 2026.11.3 (cyberconsecurity fork)
 
 ### Added

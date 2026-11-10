@@ -295,7 +295,7 @@ Import either from **Settings > Automations & scenes > Blueprints > Import bluep
 ## Requirements and limits
 
 - Home Assistant needs to be on the same network as your devices, with host networking. Home Assistant OS and supervised installs are. Docker installs need `network_mode: host`.
-- Presence is based on ping. Devices that block ping show as not seen even when connected. Mark them as allowed to sleep, or ignore them.
+- Presence is based on ping. Devices that block ping show as not seen even when connected. With the UniFi Network integration set up, NetOrbit also counts a device the controller saw in the last 5 minutes as online (*Settings > Count devices your Wi-Fi system sees as online*, on by default). Otherwise mark such devices as allowed to sleep, or ignore them.
 - Phones and laptops often use a private MAC address per network. Those are ignored by default since they can change, and they roam between access points anyway.
 - If an access point and wired devices share one switch port through an unmanaged switch, the switch can't tell them apart, so those wired devices may be drawn under the access point. Move them by hand if it matters to you.
 - Placements from pasted lists are a snapshot. TVs, cameras and smart home gear stay put, so that's fine for them.

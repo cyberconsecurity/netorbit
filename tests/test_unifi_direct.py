@@ -92,3 +92,43 @@ async def test_two_aps_on_one_port_without_unifi_stay_on_the_switch(hass: HomeAs
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert _node_states(hass)["living-room-tv"].attributes["link"] == "hub:core_switch"
+
+
+async def test_unifi_presence_marks_ping_shy_devices_online(hass: HomeAssistant, fake_net) -> None:
+    """An Echo that ignores pings is online when the controller heard from it lately, and not when it didn't."""
+    _network(fake_net)
+    entry = _entry("auto")
+    await _setup(hass, entry)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    fake_net.alive.discard("192.0.2.10")  # the TV stops answering pings
+    fake_net.alive.discard("192.0.2.6")  # and so does the access point
+    now = time.time()
+    _unifi(hass, [{"mac": TV_MAC, "ap_mac": AP_MAC, "is_wired": False, "last_seen": now - 20}],
+           [{"mac": AP_MAC, "ip": "192.0.2.6", "state": 1}])
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    nodes = _node_states(hass)
+    assert nodes["living-room-tv"].state == "online"
+    assert nodes["u6-lite-hall"].state == "online"
+
+
+async def test_unifi_presence_needs_a_recent_last_seen_and_can_be_turned_off(hass: HomeAssistant, fake_net) -> None:
+    _network(fake_net)
+    entry = _entry("auto", controller_presence=False)
+    await _setup(hass, entry)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    fake_net.alive.discard("192.0.2.10")
+    _unifi(hass, [{"mac": TV_MAC, "ap_mac": AP_MAC, "is_wired": False, "last_seen": time.time() - 20}], [])
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert _node_states(hass)["living-room-tv"].state != "online"  # turned off: pings only
+    # On, but the controller has no recent last-seen time for the NAS: no claim either way, so pings decide.
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "controller_presence": True})
+    await hass.async_block_till_done()
+    fake_net.alive.discard("192.0.2.12")
+    _unifi(hass, [{"mac": "00:00:5e:00:53:12", "is_wired": True}], [])
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert _node_states(hass)["nas"].state != "online"

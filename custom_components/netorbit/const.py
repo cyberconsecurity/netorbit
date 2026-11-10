@@ -5,13 +5,15 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "netorbit"
-VERSION: Final = "2026.11.3"
+VERSION: Final = "2026.11.4"
 
 # Config entry data
 CONF_SUBNET: Final = "subnet"
 # More subnets swept onto the same map (VLANs). Options, so they can be changed after setup.
 CONF_EXTRA_SUBNETS: Final = "extra_subnets"
 MAX_EXTRA_SUBNETS: Final = 4
+# Count a device the UniFi controller reports as connected as online, even when it ignores pings.
+CONF_CONTROLLER_PRESENCE: Final = "controller_presence"
 CONF_GATEWAY: Final = "gateway"
 
 # Options

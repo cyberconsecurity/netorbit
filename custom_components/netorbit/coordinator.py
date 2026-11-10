@@ -37,6 +37,7 @@ from .const import (
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
     CONF_STALE_HOURS,
+    CONF_CONTROLLER_PRESENCE,
     CONF_EXTRA_SUBNETS,
     CONF_SUBNET,
     DEFAULT_AUTO_HUBS,
@@ -98,6 +99,7 @@ from .sources import (
     tracker_names_by_mac,
     unifi_client_ips,
     unifi_network,
+    unifi_online_macs,
 )
 from .topology import Topology, infer, macs_close, switch_ports
 
@@ -178,6 +180,7 @@ def options_with_defaults(entry: ConfigEntry) -> dict[str, Any]:
     opts.setdefault(CONF_GROUP_BY_TYPE, True)
     opts.setdefault(CONF_CHECK_INTERNET, True)
     opts.setdefault(CONF_EXTRA_SUBNETS, [])
+    opts.setdefault(CONF_CONTROLLER_PRESENCE, True)
     opts.setdefault(CONF_PREFER_DNS, DEFAULT_PREFER_DNS)
     opts.setdefault(CONF_HUBS, [])
     opts.setdefault(CONF_DEVICES, {})
@@ -357,6 +360,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
 
         self._note_internet(now, [k for k, _ in alive if k.startswith(f"{INTERNET_KEY}:")])
         alive = [(k, ip) for k, ip in alive if not k.startswith(f"{INTERNET_KEY}:")]
+        if self.opts.get(CONF_CONTROLLER_PRESENCE, True):
+            alive += self._controller_alive({k for k, _ in alive})
         for key, ip in alive:
             rec = self._seen.setdefault(key, {"first_seen": now.isoformat()})
             rec["last_seen"] = now.isoformat()
@@ -588,6 +593,23 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self.opts = opts
         self.internal_update = True
         self.hass.config_entries.async_update_entry(self.config_entry, options=opts)
+
+    def _controller_alive(self, pinged: set[str]) -> list[tuple[str, str | None]]:
+        """Devices and hubs that didn't answer the ping but the UniFi controller reports as connected."""
+        online = unifi_online_macs(self.hass)
+        if not online:
+            return []
+        out: list[tuple[str, str | None]] = []
+        for key, rec in self._seen.items():
+            mac = rec.get("mac")
+            if key in pinged or not mac or mac.lower() not in online:
+                continue
+            out.append((key, None))
+        for hub_id, mac in self._hub_macs().items():
+            key = f"hub:{hub_id}"
+            if key not in pinged and mac.lower() in online and not any(k == key for k, _ in out):
+                out.append((key, None))
+        return out
 
     @property
     def subnets(self) -> list[str]:

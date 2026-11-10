@@ -168,8 +168,14 @@ def unifi_network(hass: HomeAssistant, now: float | None = None) -> tuple[dict[s
     Read only, from what the integration already holds in memory; nothing is sent to the controller. Any change in
     the integration's internals just leaves both maps empty, so NetOrbit falls back to the switch tables.
     """
-    aps, ips, _ = _unifi_read(hass, now)
+    aps, ips, _, _ = _unifi_read(hass, now)
     return aps, ips
+
+
+def unifi_online_macs(hass: HomeAssistant, now: float | None = None) -> set[str]:
+    """MACs the UniFi controller says are connected right now: clients it heard from lately and network devices
+    (APs, switches) it reports as connected. For devices that ignore pings, such as Echos in power save."""
+    return _unifi_read(hass, now)[3]
 
 
 def unifi_client_ips(hass: HomeAssistant, now: float | None = None) -> dict[str, str]:
@@ -178,15 +184,18 @@ def unifi_client_ips(hass: HomeAssistant, now: float | None = None) -> dict[str,
     return _unifi_read(hass, now)[2]
 
 
-def _unifi_read(hass: HomeAssistant, now: float | None) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+def _unifi_read(
+    hass: HomeAssistant, now: float | None
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], set[str]]:
     aps: dict[str, str] = {}
     ips: dict[str, str] = {}
     client_ips: dict[str, str] = {}
+    online: set[str] = set()
     now = time.time() if now is None else now
     try:
         entries = hass.config_entries.async_entries("unifi")
     except Exception:  # noqa: BLE001
-        return aps, ips, client_ips
+        return aps, ips, client_ips, online
     for entry in entries:
         api = getattr(getattr(entry, "runtime_data", None), "api", None)
         if api is None:
@@ -199,6 +208,9 @@ def _unifi_read(hass: HomeAssistant, now: float | None) -> tuple[dict[str, str],
                 mac = normalize_mac(raw.get("mac"))
                 if not mac:
                     continue
+                # Only a client with a recent last-seen time counts as connected; without one, we can't tell.
+                if isinstance(seen, (int, float)):
+                    online.add(mac)
                 ip = raw.get("ip")
                 if isinstance(ip, str) and ip:
                     client_ips[ip] = mac
@@ -211,9 +223,11 @@ def _unifi_read(hass: HomeAssistant, now: float | None) -> tuple[dict[str, str],
                 mac, ip = normalize_mac(raw.get("mac")), raw.get("ip")
                 if mac and isinstance(ip, str) and ip:
                     ips[mac] = ip
+                if mac and raw.get("state") == 1:  # 1 = connected, as the UniFi integration reads it
+                    online.add(mac)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("NetOrbit couldn't read the UniFi client list: %s", err)
-    return aps, ips, client_ips
+    return aps, ips, client_ips, online
 
 
 def _unifi_raw(handler: Any) -> list[dict[str, Any]]:
