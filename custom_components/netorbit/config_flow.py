@@ -26,6 +26,9 @@ from .const import (
     CONF_PREFER_DNS,
     CONF_CONTROLLER_PRESENCE,
     CONF_EXTRA_SUBNETS,
+    CONF_FGT_HOST,
+    CONF_FGT_TOKEN,
+    CONF_FGT_VERIFY,
     CONF_SNMP_COMMUNITY,
     CONF_SNMP_ENABLED,
     CONF_STALE_HOURS,
@@ -228,6 +231,11 @@ class NetOrbitOptionsFlow(OptionsFlow):
                     CONF_PREFER_DNS: user_input[CONF_PREFER_DNS],
                     CONF_EXTRA_SUBNETS: extra,
                     CONF_CONTROLLER_PRESENCE: user_input.get(CONF_CONTROLLER_PRESENCE, True),
+                    CONF_FGT_HOST: (user_input.get(CONF_FGT_HOST) or "").strip(),
+                    # An empty token box keeps the saved token, like a password field elsewhere in Home Assistant;
+                    # clearing the address turns the FortiGate off.
+                    CONF_FGT_TOKEN: (user_input.get(CONF_FGT_TOKEN) or "").strip() or (self.opts.get(CONF_FGT_TOKEN) if (user_input.get(CONF_FGT_HOST) or "").strip() else ""),
+                    CONF_FGT_VERIFY: bool(user_input.get(CONF_FGT_VERIFY, False)),
                 }
             )
             return self._save()
@@ -248,6 +256,9 @@ class NetOrbitOptionsFlow(OptionsFlow):
                     sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD)
                 ),
                 vol.Required(CONF_CONTROLLER_PRESENCE, default=o.get(CONF_CONTROLLER_PRESENCE, True)): bool,
+                vol.Optional(CONF_FGT_HOST, description={"suggested_value": o.get(CONF_FGT_HOST) or None}): str,
+                vol.Optional(CONF_FGT_TOKEN): sel.TextSelector(sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD)),
+                vol.Required(CONF_FGT_VERIFY, default=o.get(CONF_FGT_VERIFY, False)): bool,
                 vol.Optional(
                     CONF_EXTRA_SUBNETS,
                     description={"suggested_value": (user_input or {}).get(CONF_EXTRA_SUBNETS) or ", ".join(o.get(CONF_EXTRA_SUBNETS) or []) or None},

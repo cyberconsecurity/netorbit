@@ -1,0 +1,128 @@
+"""FortiSwitches managed by a FortiGate (FortiLink), read from the FortiGate's REST API.
+
+FortiLink-managed switches don't answer SNMP, and the FortiGate doesn't pass their MAC tables through SNMP either,
+so NetOrbit asks the FortiGate. Two read-only monitor endpoints are enough:
+
+* ``/api/v2/monitor/switch-controller/managed-switch/status``: the switches, their ports (link state, speed) and
+  how they connect: a port with ``fortilink_port`` leads to the FortiGate, a port with ``isl_peer_device_name``
+  leads to another switch.
+* ``/api/v2/monitor/switch-controller/detected-device``: every MAC address with the switch and port it was seen on.
+
+Pure: no Home Assistant imports, so it is easy to test. The HTTP calls live in the coordinator.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from .logic import normalize_mac
+
+STATUS_PATH = "/api/v2/monitor/switch-controller/managed-switch/status"
+DEVICES_PATH = "/api/v2/monitor/switch-controller/detected-device"
+
+_PORT_RE = re.compile(r"^port(\d+)$", re.IGNORECASE)
+
+
+@dataclass
+class FortiSwitch:
+    serial: str
+    name: str
+    model: str | None = None
+    ip: str | None = None
+    os_version: str | None = None
+    connected: bool = True
+    parent: str | None = None  # serial of the switch above it; None when it hangs off the FortiGate itself
+    uplink: int | None = None  # the port leading towards the FortiGate
+    down: dict[int, str] = field(default_factory=dict)  # port -> serial of a switch below it on that port
+    ports: dict[int, dict[str, Any]] = field(default_factory=dict)  # port -> {"name", "speed", "up"}
+    table: dict[str, int] = field(default_factory=dict)  # mac -> edge port
+
+
+def port_number(name: Any) -> int | None:
+    """"port23" -> 23. Other interfaces (trunks, internal) have no number."""
+    m = _PORT_RE.match(str(name or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _results(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        payload = payload.get("results")
+    return [r for r in payload or [] if isinstance(r, dict)] if isinstance(payload, list) else []
+
+
+def switch_name(serial: str, switch_id: str | None, model: str | None) -> str:
+    """The name someone gave the switch on the FortiGate, or "FortiSwitch 124EF-2440" when it is still its serial."""
+    if switch_id and switch_id != serial:
+        return switch_id
+    short = (model or "")[1:] if (model or "").upper().startswith("S") else (model or "")
+    return f"FortiSwitch {short}-{serial[-4:]}" if short else f"FortiSwitch {serial[-4:]}"
+
+
+def parse_fortiswitches(status: Any, devices: Any) -> dict[str, FortiSwitch]:
+    """{serial: FortiSwitch} from the two API responses, with parents worked out along the FortiLink and ISL links."""
+    switches: dict[str, FortiSwitch] = {}
+    links: dict[str, dict[int, str]] = {}  # serial -> {port: peer serial} over ISL
+    fortilink: dict[str, int] = {}  # serial -> its FortiLink port
+    for sw in _results(status):
+        serial = str(sw.get("serial") or sw.get("switch-id") or "").strip()
+        if not serial:
+            continue
+        version = str(sw.get("os_version") or "")
+        model = version.split("-", 1)[0] or None if version else None
+        fs = FortiSwitch(
+            serial=serial,
+            name=switch_name(serial, sw.get("switch-id"), model),
+            model=model,
+            ip=sw.get("connecting_from") or None,
+            os_version=version or None,
+            connected=str(sw.get("status") or "").lower() == "connected",
+        )
+        for port in sw.get("ports") or []:
+            if not isinstance(port, dict):
+                continue
+            n = port_number(port.get("interface"))
+            if n is None:
+                continue
+            up = str(port.get("status") or "").lower() == "up"
+            speed = port.get("speed")
+            fs.ports[n] = {"name": port.get("interface"), "speed": speed if up and isinstance(speed, int) and speed > 0 else None, "up": up}
+            if port.get("fortilink_port"):
+                fortilink.setdefault(serial, n)
+            peer = str(port.get("isl_peer_device_name") or "").strip()
+            if peer:
+                links.setdefault(serial, {})[n] = peer
+        switches[serial] = fs
+
+    # Parents: switches with a FortiLink port hang off the FortiGate; the rest off the ISL neighbour one step closer.
+    level: dict[str, int] = {}
+    queue = [s for s in switches if s in fortilink]
+    for s in queue:
+        level[s] = 0
+        switches[s].uplink = fortilink[s]
+    while queue:
+        nxt = []
+        for s in queue:
+            for port, peer in (links.get(s) or {}).items():
+                if peer not in switches or peer in level:
+                    continue
+                level[peer] = level[s] + 1
+                switches[peer].parent = s
+                switches[s].down[port] = peer
+                back = [p for p, other in (links.get(peer) or {}).items() if other == s]
+                switches[peer].uplink = back[0] if back else None
+                nxt.append(peer)
+        queue = nxt
+
+    # MAC tables, edge ports only: what is learned over FortiLink or ISL belongs to the switch at the far end.
+    for row in _results(devices):
+        fs = switches.get(str(row.get("switch_id") or ""))
+        mac = normalize_mac(row.get("mac"))
+        if fs is None or not mac:
+            continue
+        port = row.get("port_id") if isinstance(row.get("port_id"), int) else port_number(row.get("port_name"))
+        if not port or port == fs.uplink or port in fs.down or port == fortilink.get(fs.serial):
+            continue
+        fs.table[mac] = port
+    return switches

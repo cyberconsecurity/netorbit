@@ -170,6 +170,8 @@ def switch_ports(
     gateway_mac: str | None,
     children: dict[str, tuple[str, str]],
     info: dict[int, dict] | None = None,
+    uplink: int | None = None,
+    pinned: dict[int, list[str]] | None = None,
 ) -> list[dict]:
     """What each port of one switch leads to, for the card's port view. Pure.
 
@@ -178,17 +180,17 @@ def switch_ports(
     parent_mac / gateway_mac: the hub above it and the router, used to find the uplink port
     children: node key -> (mac, kind) for every hub and device the map places right under this switch
     info: {port: {"name", "alias", "speed", "up"}} from the switch, when it publishes it
+    uplink: the uplink port when something other than the table says which it is (a FortiGate for its FortiSwitches)
+    pinned: {port: [node keys]} known to be on a port without a MAC in the table (a FortiSwitch below another)
 
     Returns one dict per port, in port order: port number, name, alias, speed (Mb/s), up, whether it is
     the uplink, the node keys plugged into it (hubs first) and how many MAC addresses it has learned.
     A port with many MACs and no child usually has something unmanaged behind it.
     """
     info = info or {}
-    uplink = None
     for mac in (parent_mac, gateway_mac):
-        if mac and table.get(mac):
+        if uplink is None and mac and table.get(mac):
             uplink = table[mac]
-            break
     learned: dict[int, int] = {}
     for mac, port in table.items():
         if port and mac != own_mac:
@@ -199,6 +201,10 @@ def switch_ports(
         if not port or port == uplink:
             continue
         on_port.setdefault(port, []).append((0 if kind == "hub" else 1, key))
+    for port, keys in (pinned or {}).items():
+        for key in keys:
+            if port != uplink and all(k != key for _r, k in on_port.get(port, [])):
+                on_port.setdefault(port, []).append((0, key))
     numbers = sorted(set(info) | set(learned) | set(on_port) | ({uplink} if uplink else set()))
     out: list[dict] = []
     for port in numbers:

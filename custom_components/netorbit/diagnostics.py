@@ -46,13 +46,17 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: NetOrbi
             )
     return {
         "settings": {
-            **{k: v for k, v in opts.items() if k not in (CONF_HUBS, CONF_DEVICES, CONF_IGNORED, CONF_DISMISSED_HUBS, CONF_SNMP_COMMUNITY)},
+            **{k: v for k, v in opts.items() if k not in (CONF_HUBS, CONF_DEVICES, CONF_IGNORED, CONF_DISMISSED_HUBS, CONF_SNMP_COMMUNITY) and not _private(k)},
             "snmp_community_set": bool(opts.get(CONF_SNMP_COMMUNITY)),
             "dismissed_hubs": len(opts.get(CONF_DISMISSED_HUBS, [])),
         },
         "automatic_sources": data.sources if data else [],
         "suggested_hubs": len(data.suggested_hubs) if data else 0,
         "subnet_prefix": entry.data.get("subnet", "").split("/")[-1],
+        # Whether a FortiGate is set up and how many FortiSwitches it gave; never its address or token.
+        "fortigate": {"configured": bool(entry.options.get("fortigate_host") and entry.options.get("fortigate_token")),
+                      "verify_ssl": bool(entry.options.get("fortigate_verify_ssl")),
+                      "switches": len(getattr(entry.runtime_data, "_forti", {}) or {}) if getattr(entry, "runtime_data", None) else 0},
         # How many other subnets are swept and their sizes; never the addresses.
         "extra_subnet_prefixes": [str(n).split("/")[-1] for n in (entry.options.get("extra_subnets") or [])],
         "hubs": [
@@ -67,3 +71,12 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: NetOrbi
         "scan": {**coord.scan, "first_scan_done": coord.first_scan_done},
         "nodes": nodes,
     }
+
+
+# Settings that hold an address, a password or a token stay out of the settings section whatever they are called
+# now or later; the sections above say only whether they are set.
+_PRIVATE_HINTS = ("token", "password", "secret", "community", "host", "subnet", "address", "url")
+
+
+def _private(key: str) -> bool:
+    return any(hint in key.lower() for hint in _PRIVATE_HINTS)

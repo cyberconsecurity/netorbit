@@ -4,6 +4,10 @@
 
 ### Added
 - **Online by UniFi as well as by ping.** A device the UniFi Network integration heard from in the last 5 minutes, or an AP or switch it reports as connected, shows as online even when it ignores pings (Echo speakers in power save, some cameras). Pings still count as before. *Configure > Settings > Count devices your Wi-Fi system sees as online*, on by default; turn it off to go by pings alone.
+- **FortiSwitches behind a FortiGate.** FortiLink-managed FortiSwitches don't answer SNMP, so NetOrbit can now read them from the FortiGate's REST API with a read-only token (*Configure > Settings > FortiGate address* and *token*). Each FortiSwitch becomes a hub under the FortiGate, or under the switch it hangs off (from the FortiLink and ISL links), devices are placed on the port the FortiGate saw them on, and tapping a FortiSwitch shows its ports with link speeds. Only GET requests; the token is never logged. A FortiSwitch you remove stays removed.
+
+### Fixed
+- **Diagnostics no longer include addresses or secrets from Settings.** The settings section copied every option it didn't know to leave out, so the other subnets added in 2026.11.3 appeared in the download. It now leaves out anything holding an address, password or token, and only says whether it is set.
 
 ## 2026.11.3 (cyberconsecurity fork)
 

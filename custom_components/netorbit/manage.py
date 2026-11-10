@@ -219,6 +219,12 @@ def remove_hub(opts: dict[str, Any], hub_id: str) -> dict[str, Any]:
         dismissed = opts.setdefault(CONF_DISMISSED_HUBS, [])
         if hub["mac"] not in dismissed:
             dismissed.append(hub["mac"])
+    # Nor add a FortiSwitch back from the FortiGate's list.
+    if hub.get("forti_serial"):
+        dismissed = opts.setdefault(CONF_DISMISSED_HUBS, [])
+        marker = f"fortiswitch:{hub['forti_serial']}"
+        if marker not in dismissed:
+            dismissed.append(marker)
     return {"removed": hub_id}
 
 

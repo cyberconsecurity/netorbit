@@ -275,7 +275,7 @@ def export_config(coord: NetOrbitCoordinator) -> dict[str, Any]:
     """Everything a person has set up, keyed by MAC, so it can be backed up or moved."""
     opts = coord.opts
     keep = ("name", "icon", "hub", "sleepy", "tracked", "host", "placed_at", "managed_by", "fields")
-    hub_keep = ("id", "name", "type", "parent", "parent_locked", "host", "mac", "source", "name_auto", "managed_by", "fields")
+    hub_keep = ("id", "name", "type", "parent", "parent_locked", "host", "mac", "source", "name_auto", "managed_by", "fields", "forti_serial")
     return {
         "netorbit_export": EXPORT_VERSION,
         "hubs": [

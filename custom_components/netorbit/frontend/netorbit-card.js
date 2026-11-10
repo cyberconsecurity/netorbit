@@ -768,6 +768,7 @@ const NO_PLACEMENT = {
   manual: "You placed it",
   controller: "Reported by your Wi-Fi system",
   snmp: "Seen in a switch's MAC table",
+  fortigate: "Seen on a FortiSwitch port",
   none: "Not known yet",
 };
 

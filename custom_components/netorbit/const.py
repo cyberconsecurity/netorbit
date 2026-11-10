@@ -14,6 +14,10 @@ CONF_EXTRA_SUBNETS: Final = "extra_subnets"
 MAX_EXTRA_SUBNETS: Final = 4
 # Count a device the UniFi controller reports as connected as online, even when it ignores pings.
 CONF_CONTROLLER_PRESENCE: Final = "controller_presence"
+# A FortiGate whose REST API lists its FortiLink-managed FortiSwitches and their MAC tables (read only).
+CONF_FGT_HOST: Final = "fortigate_host"
+CONF_FGT_TOKEN: Final = "fortigate_token"
+CONF_FGT_VERIFY: Final = "fortigate_verify_ssl"
 CONF_GATEWAY: Final = "gateway"
 
 # Options
@@ -76,6 +80,7 @@ ROOT_HUB_ID: Final = "gateway"
 PLACE_MANUAL: Final = "manual"
 PLACE_CONTROLLER: Final = "controller"
 PLACE_SNMP: Final = "snmp"
+PLACE_FORTI: Final = "fortigate"
 PLACE_NONE: Final = "none"
 
 # Status values

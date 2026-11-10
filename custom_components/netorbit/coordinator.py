@@ -39,6 +39,9 @@ from .const import (
     CONF_STALE_HOURS,
     CONF_CONTROLLER_PRESENCE,
     CONF_EXTRA_SUBNETS,
+    CONF_FGT_HOST,
+    CONF_FGT_TOKEN,
+    CONF_FGT_VERIFY,
     CONF_SUBNET,
     DEFAULT_AUTO_HUBS,
     DEFAULT_DISCOVERY_INTERVAL,
@@ -67,6 +70,7 @@ from .const import (
     PLACE_CONTROLLER,
     PLACE_MANUAL,
     PLACE_NONE,
+    PLACE_FORTI,
     PLACE_SNMP,
     ROOT_HUB_ID,
     SNMP_DEFAULT_COMMUNITY,
@@ -101,6 +105,7 @@ from .sources import (
     unifi_network,
     unifi_online_macs,
 )
+from .fortinet import DEVICES_PATH, STATUS_PATH, parse_fortiswitches
 from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,6 +186,9 @@ def options_with_defaults(entry: ConfigEntry) -> dict[str, Any]:
     opts.setdefault(CONF_CHECK_INTERNET, True)
     opts.setdefault(CONF_EXTRA_SUBNETS, [])
     opts.setdefault(CONF_CONTROLLER_PRESENCE, True)
+    opts.setdefault(CONF_FGT_HOST, "")
+    opts.setdefault(CONF_FGT_TOKEN, "")
+    opts.setdefault(CONF_FGT_VERIFY, False)
     opts.setdefault(CONF_PREFER_DNS, DEFAULT_PREFER_DNS)
     opts.setdefault(CONF_HUBS, [])
     opts.setdefault(CONF_DEVICES, {})
@@ -227,6 +235,9 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._snmp = SnmpClient(hass)
         self._tables: dict[str, dict[str, int]] = {}
         self._port_info: dict[str, dict[int, Any]] = {}  # switch hub id -> {bridge port: PortInfo}
+        self._forti: dict[str, Any] = {}  # serial -> FortiSwitch, from the FortiGate's API
+        self._forti_hubs: dict[str, str] = {}  # serial -> hub id
+        self._forti_warned = False
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
         self._controller_ips: dict[str, str] = {}  # network device mac -> IP, from the UniFi integration
@@ -475,6 +486,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                     await self._detect_hubs()
             # Read tables after detection so switches found in this sweep count straight away.
             self._tables = await self._read_tables() if self.opts[CONF_SNMP_ENABLED] else {}
+            await self._read_fortigate()
             self._ap_clients = await self._read_ap_clients() if self.opts[CONF_SNMP_ENABLED] else {}
             self.set_scan(phase="layout")
             self._infer_layout(now)
@@ -593,6 +605,79 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self.opts = opts
         self.internal_update = True
         self.hass.config_entries.async_update_entry(self.config_entry, options=opts)
+
+    # ----- FortiGate ---------------------------------------------------------------
+
+    async def _fortigate_get(self, path: str) -> Any:
+        """GET one FortiGate API path with the read-only token. Raises on any failure."""
+        import aiohttp  # noqa: PLC0415
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession  # noqa: PLC0415
+
+        host = str(self.opts.get(CONF_FGT_HOST) or "").strip().rstrip("/")
+        base = host if host.startswith(("https://", "http://")) else f"https://{host}"
+        session = async_get_clientsession(self.hass, verify_ssl=bool(self.opts.get(CONF_FGT_VERIFY)))
+        headers = {"Authorization": f"Bearer {self.opts.get(CONF_FGT_TOKEN)}", "Accept": "application/json"}
+        async with session.get(base + path, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            resp.raise_for_status()
+            return await resp.json(content_type=None)
+
+    async def _read_fortigate(self) -> None:
+        """Read the FortiGate's FortiSwitches, add them as hubs and keep their MAC tables and ports for the layout.
+
+        A failed read keeps what the last good one found, so a FortiGate reboot doesn't empty the map. The token is
+        never logged."""
+        if not self.opts.get(CONF_FGT_HOST) or not self.opts.get(CONF_FGT_TOKEN):
+            self._forti, self._forti_hubs = {}, {}
+            return
+        try:
+            status = await self._fortigate_get(STATUS_PATH)
+            devices = await self._fortigate_get(DEVICES_PATH)
+        except Exception as err:  # noqa: BLE001
+            if not self._forti_warned:
+                _LOGGER.warning("NetOrbit: couldn't read FortiSwitches from the FortiGate: %s", type(err).__name__)
+                self._forti_warned = True
+        else:
+            self._forti_warned = False
+            self._forti = parse_fortiswitches(status, devices)
+        if not self._forti:
+            return
+        self._sync_forti_hubs()
+        for serial, hub_id in self._forti_hubs.items():
+            sw = self._forti.get(serial)
+            if sw is None:
+                continue
+            self._tables[hub_id] = dict(sw.table)
+            self._port_info[hub_id] = {p: dict(info) for p, info in sw.ports.items()}
+
+    def _sync_forti_hubs(self) -> None:
+        """Make each FortiSwitch a hub (once), under the FortiGate or the switch it hangs off. One removed by hand
+        stays removed."""
+        opts = manage.copy_options(self.opts)
+        dismissed = set(opts.get(CONF_DISMISSED_HUBS, []))
+        by_serial = {h["forti_serial"]: h for h in opts[CONF_HUBS] if h.get("forti_serial")}
+        changed = False
+        # Parents first, so a switch's parent hub exists before it.
+        order = sorted(self._forti.values(), key=lambda s: _forti_depth(self._forti, s.serial))
+        hubs: dict[str, str] = {}
+        for sw in order:
+            if f"fortiswitch:{sw.serial}" in dismissed:
+                continue
+            parent = hubs.get(sw.parent) if sw.parent else ROOT_HUB_ID
+            parent = parent or ROOT_HUB_ID
+            hub = by_serial.get(sw.serial)
+            if hub is None:
+                made = manage.add_hub(opts, sw.name, "switch", parent=parent, source="fortigate")
+                hub = manage.hub_by_id(opts, made["hub"])
+                hub["forti_serial"] = sw.serial
+                hub["fields"] = {k: v for k, v in (("Serial", sw.serial), ("Management IP", sw.ip), ("FortiOS", sw.os_version)) if v}
+                changed = True
+            if hub.get("source") == "fortigate" and (hub.get("parent") != parent or not hub.get("parent_locked")):
+                hub["parent"], hub["parent_locked"] = parent, True
+                changed = True
+            hubs[sw.serial] = hub["id"]
+        self._forti_hubs = hubs
+        if changed:
+            self._commit(opts)
 
     def _controller_alive(self, pinged: set[str]) -> list[tuple[str, str | None]]:
         """Devices and hubs that didn't answer the ping but the UniFi controller reports as connected."""
@@ -954,10 +1039,22 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         leaf = {h["id"] for h in self.opts[CONF_HUBS] if h.get("type") in (HUB_AP, HUB_MESH, HUB_OTHER) and h["id"] not in self._tables}
         # Parents a person has locked tell infer() which of several hubs sharing a switch port is the uplink.
         locked = {h["id"]: h["parent"] for h in self.opts[CONF_HUBS] if h.get("parent_locked") and h.get("parent") and h["parent"] != h["id"]}
-        self._topology = infer(self._tables, hub_macs, gateway_mac, device_macs, ROOT_HUB_ID, leaf_hubs=leaf, hub_parents=locked)
+        forti = set(self._forti_hubs.values())
+        snmp_tables = {k: v for k, v in self._tables.items() if k not in forti}
+        self._topology = infer(snmp_tables, hub_macs, gateway_mac, device_macs, ROOT_HUB_ID, leaf_hubs=leaf, hub_parents=locked)
         stamp = now.isoformat()
         for key, hub_id in self._topology.device_hub.items():
             self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_SNMP, "at": stamp}
+        # The FortiGate says exactly which FortiSwitch port each MAC is on (edge ports only), so that wins.
+        if forti:
+            by_mac = {mac.lower(): key for key, mac in device_macs.items()}
+            for serial, hub_id in self._forti_hubs.items():
+                sw = self._forti.get(serial)
+                for mac in sw.table if sw else ():
+                    key = by_mac.get(mac)
+                    if key:
+                        self._topology.device_hub[key] = hub_id
+                        self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_FORTI, "at": stamp}
 
     def _auto_placement(self, key: str, rec: dict[str, Any], now: datetime) -> tuple[str | None, str]:
         mac = rec.get("mac")
@@ -1212,9 +1309,14 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             if node is None:
                 continue
             info = {int(p): _port_dict(i) for p, i in (self._port_info.get(hub_id) or {}).items()}
+            # A FortiSwitch's uplink and the ports to the switches below it come from the FortiGate, not its table.
+            serial = next((s for s, h in self._forti_hubs.items() if h == hub_id), None)
+            sw = self._forti.get(serial) if serial else None
+            pinned = {p: [f"hub:{self._forti_hubs[c]}"] for p, c in sw.down.items() if c in self._forti_hubs} if sw else None
             ports = switch_ports(
                 table, hub_macs.get(hub_id), hub_macs.get(node.link) if node.link else None,
                 hub_macs.get(ROOT_HUB_ID), children.get(hub_id, {}), info,
+                uplink=sw.uplink if sw else None, pinned=pinned,
             )
             node.ports = ports
             for entry in ports:
@@ -1412,3 +1514,14 @@ def _port_dict(info: Any) -> dict[str, Any]:
     if isinstance(info, dict):
         return info
     return {"name": getattr(info, "name", None), "alias": getattr(info, "alias", None), "speed": getattr(info, "speed", None), "up": getattr(info, "up", None)}
+
+
+def _forti_depth(switches: dict[str, Any], serial: str) -> int:
+    """How many switches lie between this FortiSwitch and the FortiGate."""
+    depth, seen = 0, set()
+    sw = switches.get(serial)
+    while sw is not None and sw.parent and sw.parent not in seen:
+        seen.add(sw.parent)
+        depth += 1
+        sw = switches.get(sw.parent)
+    return depth

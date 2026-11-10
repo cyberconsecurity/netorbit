@@ -61,7 +61,10 @@
           "snmp_community": "SNMP community (password)",
           "prefer_dns_names": "Prefer DNS and Bonjour names",
           "extra_subnets": "Other subnets to include",
-          "controller_presence": "Count devices your Wi-Fi system sees as online"
+          "controller_presence": "Count devices your Wi-Fi system sees as online",
+          "fortigate_host": "FortiGate address (for FortiSwitches)",
+          "fortigate_token": "FortiGate REST API token",
+          "fortigate_verify_ssl": "Check the FortiGate's certificate"
         },
         "data_description": {
           "discovery_interval": "How often the whole subnet is swept for new devices.",
@@ -74,7 +77,10 @@
           "snmp_community": "Leave empty to try the factory default. If you changed your switches' read-only community, enter it here.",
           "prefer_dns_names": "Show the name your network gives a device (reverse DNS, or the name it announces over Bonjour) before names from other integrations, and use it for hubs NetOrbit named itself, such as the router. Names you typed are always kept.",
           "extra_subnets": "Sweep these too and draw them on the same map, for example an IoT VLAN: 192.0.2.0/24, 198.51.100.0/24. Up to 4, each up to 1024 addresses. NetOrbit needs each device's MAC address. On a subnet Home Assistant has an address on, it reads them itself; on one it only reaches through your router, it takes them from the UniFi Network integration, so devices there show only when that integration is set up.",
-          "controller_presence": "A device the UniFi Network integration reports as connected in the last 5 minutes shows as online even if it doesn't answer pings (Echo speakers and some cameras often don't). Turn off to go by pings alone."
+          "controller_presence": "A device the UniFi Network integration reports as connected in the last 5 minutes shows as online even if it doesn't answer pings (Echo speakers and some cameras often don't). Turn off to go by pings alone.",
+          "fortigate_host": "FortiSwitches managed by a FortiGate (FortiLink) don't answer SNMP. Enter the FortiGate's address, such as 192.0.2.1 or 192.0.2.1:8443, and NetOrbit reads its switches, their ports and which device is on which port from its REST API. Leave empty to turn this off.",
+          "fortigate_token": "A token for a REST API admin with a read-only profile (WiFi & Switch read access is enough). NetOrbit only reads. Leave empty to keep the saved token.",
+          "fortigate_verify_ssl": "Leave off for the FortiGate's own self-signed certificate. Turn on if it has a certificate your Home Assistant trusts."
         }
       },
       "add_hub": {

@@ -78,6 +78,17 @@ If your devices are spread over more than one subnet, such as a main network and
 
 NetOrbit tracks devices by MAC address. If Home Assistant has an address on that subnet (for example a VLAN interface under **Settings > System > Network**), it reads the MACs itself. If it only reaches the subnet through your router, it takes them from the UniFi Network integration, so set that up first; without it, devices on a routed subnet can't be tracked and stay off the map.
 
+
+### FortiSwitches behind a FortiGate
+
+FortiSwitches managed by a FortiGate over FortiLink don't answer SNMP, and the FortiGate doesn't pass their MAC tables on over SNMP either. NetOrbit reads them from the FortiGate's REST API instead, with a token that can only read.
+
+1. On the FortiGate, go to **System > Admin Profiles > Create New**. Name it something like `netorbit-read`, set **WiFi & Switch** to **Read** and everything else to **None**, and save.
+2. Go to **System > Administrators > Create New > REST API Admin**. Pick the profile you just made, turn off **PKI Group**, and under **Trusted Hosts** enter only your Home Assistant's address (for example `192.0.2.50/32`). Save, and copy the token it shows. It is shown only once.
+3. In Home Assistant, go to **Settings > Devices & services > NetOrbit > Configure > Settings**. Enter the FortiGate's address under **FortiGate address** (add `:port` if its admin page isn't on 443) and paste the token. Leave **Check the FortiGate's certificate** off unless it has a certificate Home Assistant trusts.
+
+On the next scan each FortiSwitch shows up as a hub under the FortiGate, or under the FortiSwitch it hangs off, with its devices on the ports the FortiGate saw them on. Tap one to see its ports. NetOrbit only sends GET requests to two monitor endpoints (`switch-controller/managed-switch/status` and `switch-controller/detected-device`), never logs the token, and leaves both the address and the token out of diagnostics.
+
 ## 3. Finish the rest by hand (about a minute)
 
 Whatever NetOrbit couldn't work out, you can place yourself. Three ways, use whichever is quickest:
