@@ -27,7 +27,7 @@ def test_parse_subnets() -> None:
     with pytest.raises(ValueError, match="invalid"):
         parse_subnets("not-a-subnet", 1024, 4)
     with pytest.raises(ValueError, match="too_large"):
-        parse_subnets("198.51.0.0/16", 1024, 4)
+        parse_subnets("198.51.0.0/16", 1024, 4)  # example-ok: deliberately larger than any documentation range, to trip the size limit
     with pytest.raises(ValueError, match="too_many"):
         parse_subnets("192.0.2.0/30 192.0.2.4/30 192.0.2.8/30 192.0.2.12/30 192.0.2.16/30", 1024, 4)
 
@@ -87,7 +87,7 @@ async def test_settings_take_and_check_other_subnets(hass: HomeAssistant, fake_n
         flow = await hass.config_entries.options.async_configure(flow["flow_id"], {"next_step_id": "settings"})
         return await hass.config_entries.options.async_configure(flow["flow_id"], {**base, "extra_subnets": value})
 
-    bad = await submit("198.51.0.0/16")
+    bad = await submit("198.51.0.0/16")  # example-ok: deliberately larger than any documentation range, to trip the size limit
     assert bad["type"] is FlowResultType.FORM and bad["errors"] == {"extra_subnets": "subnet_too_large"}
     bad = await submit("nonsense")
     assert bad["errors"] == {"extra_subnets": "invalid_subnet"}
