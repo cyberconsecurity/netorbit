@@ -902,7 +902,7 @@ test("link speed: lines take the speed color when the far end answers, the statu
   const color = (k) => D.scene.links.find((l) => l.k === k).color;
   assert.strictEqual(color("sw"), NO.noSpeed(10000).color);
   assert.strictEqual(color("sw-d0"), NO.noSpeed(1000).color);
-  assert.strictEqual(color("sw-d1"), "#ef4444"); // offline: the red matters more than the speed
+  assert.strictEqual(color("sw-d1"), "#fb923c"); // offline: the warning color matters more than the speed
   assert.deepStrictEqual(D.speeds.map((b) => b.label), ["10 Gb/s+", "1 Gb/s"]);
   const plain = netorbitDraw(m, { speed_colors: false }, {});
   assert.deepStrictEqual(plain.speeds, []);
@@ -971,4 +971,15 @@ test("a core switch with 60 devices and 17 hubs below it stays compact in every 
   // The line down to the later rows runs in a lane no device sits in.
   const x = T.pos.sw.x;
   for (const d of m.devices.filter((d) => d.link !== "sw")) assert.ok(Math.abs(T.pos[d.key].x - x) >= 15 + 10, `${d.key} clear of the trunk`);
+});
+
+
+test("offline colors escalate: orange while recently gone, red once gone longer than the offline time", () => {
+  const m = model([["r", null], ["sw", "r"]], { sw: 2 });
+  m.devices[0].status = "offline";
+  m.devices[1].status = "gone";
+  const D = netorbitDraw(m, {}, {});
+  const line = (k) => D.scene.links.find((l) => l.k === k).color;
+  assert.strictEqual(line("sw-d0"), "#fb923c", "just went offline: orange");
+  assert.strictEqual(line("sw-d1"), "#ef4444", "gone past the offline time: red");
 });

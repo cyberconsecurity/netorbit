@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.5 (cyberconsecurity fork)
+
+### Changed
+- **Offline colors escalate the usual way round.** A device that stops answering is now orange, and turns red once it has been gone `offline_minutes`, instead of red first and orange later. Legend, chips, lines and shared images follow.
+
 ## 2026.11.4 (cyberconsecurity fork)
 
 ### Added

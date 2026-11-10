@@ -2,16 +2,17 @@
  * Draws a live radial map from the NetOrbit integration's sensors.
  * https://github.com/the-scott-davis/netorbit  (MIT)
  */
-const NETORBIT_VERSION = "2026.11.4";
+const NETORBIT_VERSION = "2026.11.5";
 
 const NO_STATUS = {
   online: { color: "#34d399", label: "Online" },
   recent: { color: "#fbbf24", label: "Seen recently" },
   stale: { color: "#f87171", label: "Not seen" },
-  // With offline colors on (the default), a device that stops answering is red ("offline") and turns orange
-  // ("gone") once it hasn't been seen for offline_minutes (60 by default). See netorbitLiveStatus.
-  offline: { color: "#ef4444", label: "Offline" },
-  gone: { color: "#fb923c", label: "Offline 1 h+" },
+  // With offline colors on (the default), a device that stops answering is orange ("offline") and turns red
+  // ("gone") once it hasn't been seen for offline_minutes (60 by default): a warning that escalates. See
+  // netorbitLiveStatus.
+  offline: { color: "#fb923c", label: "Offline" },
+  gone: { color: "#ef4444", label: "Offline 1 h+" },
   new: { color: "#c084fc", label: "New" },
   unknown: { color: "#64748b", label: "Unknown" },
 };
@@ -46,8 +47,8 @@ const NO_HUB_TYPE = {
 const NO_NAME_MAX = 64;
 
 /** The status a hub or device is drawn with. NetOrbit's sensors say online, recent (seen within the stale window)
- * or stale; with offline colors on, anything not answering is "offline" (red) until it has been gone `minutes`,
- * then "gone" (orange). Other states (new, unknown, group) pass through. Pure; exported for tests. */
+ * or stale; with offline colors on, anything not answering is "offline" (orange) until it has been gone `minutes`,
+ * then "gone" (red). Other states (new, unknown, group) pass through. Pure; exported for tests. */
 function netorbitLiveStatus(status, lastSeen, firstSeen, now, minutes) {
   if (status !== "recent" && status !== "stale") return status;
   const t = new Date(lastSeen || firstSeen || 0).getTime();
@@ -1002,7 +1003,7 @@ function netorbitDraw(model, cfg, opts) {
       `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" transform="rotate(${rot.toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)})" text-anchor="${anchor}" dominant-baseline="middle" class="dlab" style="font-size:${fs.toFixed(1)}px${d.suggested ? `;fill:${NO_SUGGEST.light}` : ""}">${noEsc(text)}</text></g>`;
     scene.nodes.push({ k: d.key, x: p.x, y: p.y, r: 15, color: c, icon: d.icon, halo: live(d.status), dashed: d.kind === "new", sleepy: d.sleepy });
     scene.devLabels.push({ k: d.key, x: tx, y: ty, rot, anchor, size: fs, text,
-      color: d.suggested ? NO_SUGGEST.light : ({ recent: "#fde68a", stale: "#fecaca", offline: "#fecaca", gone: "#fed7aa", new: "#e9d5ff" }[d.status] || "#cbd5e1") });
+      color: d.suggested ? NO_SUGGEST.light : ({ recent: "#fde68a", stale: "#fecaca", offline: "#fed7aa", gone: "#fecaca", new: "#e9d5ff" }[d.status] || "#cbd5e1") });
   });
 
   if (inet) {
@@ -1246,7 +1247,7 @@ const NO_SHARE_CSS = `.ring{fill:none;stroke:rgba(148,163,184,.07);stroke-width:
   `.lk.faint{stroke-width:1.2;opacity:.25;stroke-dasharray:2 5}.lk.dashed{stroke-dasharray:3 6}.lk.live{opacity:.8}.disc{fill:#0f172a;stroke-width:2.2}` +
   `.disc.dashed{stroke-dasharray:4 4}.halo{opacity:.13;filter:url(#noblur)}.hlab{fill:#f1f5f9;font-size:15px;font-weight:600;text-anchor:middle;paint-order:stroke;stroke:#0b1220;stroke-width:4px}` +
   `.hlab.glab{fill:#cbd5e1;font-size:13px;font-weight:500}.hlab.ilab{font-size:13px}.hsub{fill:#94a3b8;font-size:12px;text-anchor:middle;paint-order:stroke;stroke:#0b1220;stroke-width:4px}` +
-  `.dlab{fill:#cbd5e1}.dev.recent .dlab{fill:#fde68a}.dev.stale .dlab{fill:#fecaca}.dev.offline .dlab{fill:#fecaca}.dev.gone .dlab{fill:#fed7aa}.dev.sleepy:not(.online){opacity:.7}.zz{fill:#a78bfa;stroke:#0f172a;stroke-width:1.5}`;
+  `.dlab{fill:#cbd5e1}.dev.recent .dlab{fill:#fde68a}.dev.stale .dlab{fill:#fecaca}.dev.offline .dlab{fill:#fed7aa}.dev.gone .dlab{fill:#fecaca}.dev.sleepy:not(.online){opacity:.7}.zz{fill:#a78bfa;stroke:#0f172a;stroke-width:1.5}`;
 const NO_SHARE_FONT = "Roboto, 'Helvetica Neue', Arial, system-ui, sans-serif";
 // Size of the share image and video frame in map units: a header band, the map (1140 x 1090) and a footer line.
 const NO_SHARE = { w: 1140, h: 1220, mapY: 80 };
@@ -1625,7 +1626,7 @@ class NetOrbitCard extends HTMLElement {
   }
 
   // Offline colors depend on the clock as well as on Home Assistant, so look again once a minute: a device that
-  // has been gone an hour turns from red to orange even when nothing else changes. Only redraws when it does.
+  // has been gone an hour turns from orange to red even when nothing else changes. Only redraws when it does.
   connectedCallback() {
     if (this._tick) return;
     this._tick = setInterval(() => { if (this._hass && this.isConnected) this.hass = this._hass; }, 60000);
@@ -1948,8 +1949,8 @@ class NetOrbitCard extends HTMLElement {
   .dlab { fill:#cbd5e1; }
   .dev.recent .dlab { fill:#fde68a; }
   .dev.stale .dlab { fill:#fecaca; }
-  .dev.offline .dlab { fill:#fecaca; }
-  .dev.gone .dlab { fill:#fed7aa; }
+  .dev.offline .dlab { fill:#fed7aa; }
+  .dev.gone .dlab { fill:#fecaca; }
   .dev.new .dlab { fill:#e9d5ff; }
   .dev.sleepy:not(.online) { opacity:.7; }
   .zz { fill:#a78bfa; stroke:#0f172a; stroke-width:1.5; }
