@@ -97,7 +97,9 @@ config system interface
 end
 ```
 
-On the next scan each FortiSwitch shows up as a hub under the FortiGate, or under the FortiSwitch it hangs off, with its devices on the ports the FortiGate saw them on. Tap one to see its ports. NetOrbit only sends GET requests to monitor endpoints (`switch-controller/managed-switch/status`, `switch-controller/detected-device`, and with Network read `system/interface` and `network/lldp/neighbors`), never logs the token, and leaves both the address and the token out of diagnostics.
+With Network read NetOrbit also uses the FortiGate's ARP table, so a subnet on its own FortiGate port (a consumer Wi-Fi router or mesh system, for example) works without Home Assistant being on it: add the subnet under **Other subnets to include**, let Home Assistant reach it through a firewall policy (pings), and add the Wi-Fi router as a hub with its address on that subnet. Everything the FortiGate sees on that port is then drawn under it. A Wi-Fi router in router (NAT) mode hides its clients behind its own address; put it in bridge or access point mode to see them.
+
+On the next scan each FortiSwitch shows up as a hub under the FortiGate, or under the FortiSwitch it hangs off, with its devices on the ports the FortiGate saw them on. Tap one to see its ports. NetOrbit only sends GET requests to monitor endpoints (`switch-controller/managed-switch/status`, `switch-controller/detected-device`, and with Network read `system/interface`, `network/lldp/neighbors` and `system/arp`), never logs the token, and leaves both the address and the token out of diagnostics.
 
 ## 3. Finish the rest by hand (about a minute)
 

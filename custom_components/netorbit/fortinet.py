@@ -176,3 +176,20 @@ def parse_fortigate_ports(interfaces: Any, lldp: Any) -> tuple[dict[int, dict[st
         neighbors.append({"port": n, "port_name": ports[n]["name"], "system_name": str(row.get("system_name") or "").strip() or None,
                           "mac": normalize_mac(row.get("mac")), "chassis": normalize_mac(row.get("chassis_id")), "ip": ip})
     return ports, neighbors
+
+
+ARP_PATH = "/api/v2/monitor/system/arp"
+
+
+def parse_fortigate_arp(payload: Any) -> dict[str, tuple[str, str | None]]:
+    """{IP: (MAC, interface)} from the FortiGate's ARP table: every device it talks to, and the interface it heard it
+    on. Fills in MACs for subnets Home Assistant only reaches through the FortiGate, and says which FortiGate port a
+    device on a routed port is behind."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for row in _results(payload):
+        ip = str(row.get("ip") or "").strip()
+        mac = normalize_mac(row.get("mac"))
+        if not ip or not mac or mac in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+            continue
+        out[ip] = (mac, str(row.get("interface") or row.get("intf") or "").strip() or None)
+    return out

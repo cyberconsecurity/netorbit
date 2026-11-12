@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "netorbit"
-VERSION: Final = "2026.11.5"
+VERSION: Final = "2026.11.6"
 
 # Config entry data
 CONF_SUBNET: Final = "subnet"

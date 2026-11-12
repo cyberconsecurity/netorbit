@@ -2,7 +2,7 @@
  * Draws a live radial map from the NetOrbit integration's sensors.
  * https://github.com/the-scott-davis/netorbit  (MIT)
  */
-const NETORBIT_VERSION = "2026.11.5";
+const NETORBIT_VERSION = "2026.11.6";
 
 const NO_STATUS = {
   online: { color: "#34d399", label: "Online" },

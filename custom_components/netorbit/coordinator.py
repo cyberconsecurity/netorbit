@@ -105,7 +105,16 @@ from .sources import (
     unifi_network,
     unifi_online_macs,
 )
-from .fortinet import DEVICES_PATH, INTERFACES_PATH, LLDP_PATH, STATUS_PATH, parse_fortigate_ports, parse_fortiswitches
+from .fortinet import (
+    ARP_PATH,
+    DEVICES_PATH,
+    INTERFACES_PATH,
+    LLDP_PATH,
+    STATUS_PATH,
+    parse_fortigate_arp,
+    parse_fortigate_ports,
+    parse_fortiswitches,
+)
 from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
@@ -240,6 +249,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._forti_warned = False
         self._fgt_ports: dict[int, dict[str, Any]] = {}  # the FortiGate's own physical ports
         self._fgt_neighbors: list[dict[str, Any]] = []  # LLDP neighbours heard on them
+        self._fgt_arp: dict[str, tuple[str, str | None]] = {}  # IP -> (MAC, FortiGate interface)
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
         self._controller_ips: dict[str, str] = {}  # network device mac -> IP, from the UniFi integration
@@ -432,6 +442,10 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             # Devices on a subnet Home Assistant reaches only through the router never get an ARP entry here. The
             # UniFi controller knows their MACs, so take them from it (only where ARP has nothing).
             for ip, mac in unifi_client_ips(self.hass).items():
+                if ip in host_set and ip not in arp:
+                    arp[ip] = mac
+            # And so does the FortiGate, for every subnet it routes (from its last read).
+            for ip, (mac, _intf) in self._fgt_arp.items():
                 if ip in host_set and ip not in arp:
                     arp[ip] = mac
 
@@ -630,7 +644,7 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         never logged."""
         if not self.opts.get(CONF_FGT_HOST) or not self.opts.get(CONF_FGT_TOKEN):
             self._forti, self._forti_hubs = {}, {}
-            self._fgt_ports, self._fgt_neighbors = {}, []
+            self._fgt_ports, self._fgt_neighbors, self._fgt_arp = {}, [], {}
             return
         # The FortiGate's own ports and what LLDP hears on them. These need "Network: Read" on the token's profile;
         # without it they are skipped and the FortiSwitches still work.
@@ -641,6 +655,10 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             pass
         else:
             self._fgt_ports, self._fgt_neighbors = parse_fortigate_ports(interfaces, lldp)
+        try:
+            self._fgt_arp = parse_fortigate_arp(await self._fortigate_get(ARP_PATH))
+        except Exception:  # noqa: BLE001  # needs the same Network read; skipped without it
+            pass
         try:
             status = await self._fortigate_get(STATUS_PATH)
             devices = await self._fortigate_get(DEVICES_PATH)
@@ -1067,6 +1085,12 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                     if key:
                         self._topology.device_hub[key] = hub_id
                         self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_FORTI, "at": stamp}
+        # A FortiGate port with its own subnet and one hub on it (a router or AP of its own, say): devices the
+        # FortiGate sees on that port and that nothing else placed go under that hub.
+        for key, hub_id in self._port_hub_placements().items():
+            if key not in self._topology.device_hub:
+                self._topology.device_hub[key] = hub_id
+                self._seen[key]["auto"] = {"hub": hub_id, "source": PLACE_FORTI, "at": stamp}
 
     def _auto_placement(self, key: str, rec: dict[str, Any], now: datetime) -> tuple[str | None, str]:
         mac = rec.get("mac")
@@ -1341,6 +1365,35 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                     if child is not None:
                         child.port, child.port_name, child.port_speed = entry["port"], entry["name"], entry["speed"]
 
+    def _fgt_port_of(self, ip: str | None) -> str | None:
+        """The FortiGate physical port an address sits behind, when it is on a port with a subnet of its own."""
+        if not ip or ip not in self._fgt_arp:
+            return None
+        intf = self._fgt_arp[ip][1]
+        names = {p["name"] for p in self._fgt_ports.values()}
+        return intf if intf in names else None
+
+    def _port_hub_placements(self) -> dict[str, str]:
+        """{device key: hub id} for devices on a routed FortiGate port that has exactly one hub on it."""
+        if not self._fgt_arp or not self._fgt_ports:
+            return {}
+        hubs_on: dict[str, list[str]] = {}
+        for hub in self.opts[CONF_HUBS]:
+            if hub["id"] == ROOT_HUB_ID:
+                continue
+            port = self._fgt_port_of(hub.get("host"))
+            if port:
+                hubs_on.setdefault(port, []).append(hub["id"])
+        out: dict[str, str] = {}
+        hub_hosts = {h.get("host") for h in self.opts[CONF_HUBS]}
+        for key, rec in self._seen.items():
+            if key.startswith(("hub:", f"{INTERNET_KEY}:")) or rec.get("ip") in hub_hosts:
+                continue
+            port = self._fgt_port_of(rec.get("ip"))
+            if port and len(hubs_on.get(port, [])) == 1:
+                out[key] = hubs_on[port][0]
+        return out
+
     def _attach_fortigate_ports(self, nodes: dict[str, Node]) -> None:
         """When the router is a FortiGate NetOrbit can read: its physical ports as the router's port view, and each
         hub LLDP hears on one of them told which port that is."""
@@ -1353,6 +1406,15 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             hub = self._hub_for_neighbor(nodes, nb, serials)
             if hub is not None and hub.key not in on_port.get(nb["port"], []):
                 on_port.setdefault(nb["port"], []).append(hub.key)
+        # On a routed port, whatever hangs straight off the router and the FortiGate hears there is on that port.
+        number = {p["name"]: n for n, p in self._fgt_ports.items()}
+        root_key = f"hub:{ROOT_HUB_ID}"
+        for node in nodes.values():
+            if node.link != ROOT_HUB_ID or node.key == root_key or node.kind not in ("hub", "device"):
+                continue
+            port = self._fgt_port_of(node.ip)
+            if port and node.key not in on_port.get(number[port], []):
+                on_port.setdefault(number[port], []).append(node.key)
         ports = []
         for n, info in sorted(self._fgt_ports.items()):
             keys = on_port.get(n, [])
@@ -1367,23 +1429,23 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         root.ports = ports
 
     def _hub_for_neighbor(self, nodes: dict[str, Node], nb: dict[str, Any], serials: dict[str, str]) -> Node | None:
-        """The hub an LLDP neighbour is: a FortiSwitch by serial, anything else by MAC, management IP or name."""
+        """The hub an LLDP neighbour is, strongest evidence first: a FortiSwitch's serial, then an exact MAC, the
+        management IP, the name, and only then a MAC close to the neighbour's (when just one hub has one)."""
         name = (nb.get("system_name") or "").lower()
         macs = {m for m in (nb.get("mac"), nb.get("chassis")) if m}
-        for node in nodes.values():
-            if node.kind != "hub" or node.key == f"hub:{ROOT_HUB_ID}":
-                continue
-            hub_id = node.key.split(":", 1)[1]
-            if serials.get(hub_id) and serials[hub_id].lower() == name:
-                return node
-            mac = (node.mac or "").lower()
-            if mac and (mac in macs or any(macs_close(mac, m) for m in macs)):
-                return node
-            if nb.get("ip") and node.ip == nb["ip"]:
-                return node
-            if name and node.name.lower() == name:
-                return node
-        return None
+        hubs = [n for n in nodes.values() if n.kind == "hub" and n.key != f"hub:{ROOT_HUB_ID}"]
+        tests = (
+            lambda n: bool(name) and (serials.get(n.key.split(":", 1)[1]) or "").lower() == name,
+            lambda n: bool(n.mac) and n.mac.lower() in macs,
+            lambda n: bool(nb.get("ip")) and n.ip == nb["ip"],
+            lambda n: bool(name) and n.name.lower() == name,
+        )
+        for test in tests:
+            hit = [n for n in hubs if test(n)]
+            if len(hit) == 1:
+                return hit[0]
+        near = [n for n in hubs if n.mac and any(macs_close(n.mac.lower(), m) for m in macs)]
+        return near[0] if len(near) == 1 else None
 
     @staticmethod
     def _rollup_hubs(nodes: dict[str, Node], addressless: dict[str, str]) -> None:

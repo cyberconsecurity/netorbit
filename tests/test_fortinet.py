@@ -13,8 +13,10 @@ from custom_components.netorbit.diagnostics import async_get_config_entry_diagno
 from custom_components.netorbit.fortinet import (
     DEVICES_PATH,
     INTERFACES_PATH,
+    ARP_PATH,
     LLDP_PATH,
     STATUS_PATH,
+    parse_fortigate_arp,
     parse_fortigate_ports,
     parse_fortiswitches,
     port_label,
@@ -88,6 +90,7 @@ INTERFACES = {"http_method": "GET", "status": "success", "results": {
     "wan2": _phys("00:00:5e:00:53:e2", up=False, alias="(Management_Use)"),
     "internal1": _phys("00:00:5e:00:53:e3"),
     "internal2": _phys("00:00:5e:00:53:e4", speed=100.0),
+    "internal3": _phys("00:00:5e:00:53:e7", alias="(Wi-Fi router)"),
     "a": _phys("00:00:5e:00:53:e5", alias="(Backup WAN)"),
     "b": _phys("00:00:5e:00:53:e6"),
     "modem": _phys("00:00:00:00:00:00", up=False),
@@ -104,7 +107,7 @@ LLDP = {"http_method": "GET", "status": "success", "results": [
 
 def test_parse_fortigate_ports_keeps_physical_ports_and_matches_lldp() -> None:
     ports, nbs = parse_fortigate_ports(INTERFACES, LLDP)
-    assert [p["name"] for p in ports.values()] == ["wan1", "wan2", "internal1", "internal2", "a", "b"]
+    assert [p["name"] for p in ports.values()] == ["wan1", "wan2", "internal1", "internal2", "internal3", "a", "b"]
     by = {p["name"]: (n, p) for n, p in ports.items()}
     assert by["internal2"][1] == {"name": "internal2", "label": "int2", "alias": None, "speed": 100, "up": True}
     assert by["wan2"][1]["up"] is False and by["wan2"][1]["speed"] is None and by["wan2"][1]["alias"] == "Management_Use"
@@ -114,13 +117,32 @@ def test_parse_fortigate_ports_keeps_physical_ports_and_matches_lldp() -> None:
     assert parse_fortigate_ports(None, None) == ({}, [])
 
 
+WIFI_ROUTER_IP = "203.0.113.2"  # a Wi-Fi router of its own (an AmpliFi, say) on FortiGate port internal3
+WIFI_ROUTER_MAC = "00:00:5e:00:53:d0"
+PHONE_IP = "203.0.113.20"  # a phone on that router, on a subnet Home Assistant isn't on
+PHONE_MAC = "00:00:5e:00:53:d1"
+ARP = {"http_method": "GET", "status": "success", "results": [
+    {"ip": WIFI_ROUTER_IP, "age": 3, "mac": WIFI_ROUTER_MAC, "interface": "internal3"},
+    {"ip": PHONE_IP, "age": 12, "mac": PHONE_MAC, "interface": "internal3"},
+    {"ip": "192.0.2.12", "age": 1, "mac": "00:00:5e:00:53:99", "interface": "lan"},  # ARP in HA wins for the NAS
+    {"ip": "203.0.113.99", "age": 1, "mac": "00:00:00:00:00:00", "interface": "internal3"},  # incomplete entry
+]}
+
+
+def test_parse_fortigate_arp() -> None:
+    arp = parse_fortigate_arp(ARP)
+    assert arp[PHONE_IP] == (PHONE_MAC, "internal3")
+    assert "203.0.113.99" not in arp
+    assert parse_fortigate_arp(None) == {}
+
+
 def _fortigate(fail: bool = False, ports: bool = True):
     async def get(_self, path):
         if fail:
             raise OSError("unreachable")
-        if path in (INTERFACES_PATH, LLDP_PATH) and not ports:
+        if path in (INTERFACES_PATH, LLDP_PATH, ARP_PATH) and not ports:
             raise PermissionError("403: the token's profile has no Network read")
-        return {STATUS_PATH: STATUS, DEVICES_PATH: DEVICES, INTERFACES_PATH: INTERFACES, LLDP_PATH: LLDP}[path]
+        return {STATUS_PATH: STATUS, DEVICES_PATH: DEVICES, INTERFACES_PATH: INTERFACES, LLDP_PATH: LLDP, ARP_PATH: ARP}[path]
     return patch("custom_components.netorbit.coordinator.NetOrbitCoordinator._fortigate_get", autospec=True, side_effect=get)
 
 
@@ -247,7 +269,7 @@ async def test_the_router_gets_the_fortigate_ports_and_switches_learn_theirs(has
     core_id = next(h["id"] for h in entry.options["hubs"] if h.get("forti_serial") == CORE)
     router = next(n.attributes for n in nodes.values() if n.attributes.get("node_key") == "hub:gateway")
     ports = {p["name"]: p for p in router["ports"]}
-    assert set(ports) == {"wan1", "wan2", "internal1", "internal2", "a", "b"}
+    assert set(ports) == {"wan1", "wan2", "internal1", "internal2", "internal3", "a", "b"}
     assert ports["b"]["nodes"] == [f"hub:{core_id}"] and ports["b"]["label"] == "b"
     assert ports["internal2"]["nodes"] == ["hub:core_switch"] and ports["internal2"]["speed"] == 100
     assert ports["wan1"]["uplink"] is True and ports["wan2"]["uplink"] is False
@@ -265,3 +287,30 @@ async def test_without_network_read_the_fortiswitches_still_work(hass: HomeAssis
     assert nodes["lab-host"].attributes["placement"] == "fortigate"
     router = next(n.attributes for n in nodes.values() if n.attributes.get("node_key") == "hub:gateway")
     assert router["ports"] is None
+
+
+async def test_a_router_on_a_routed_fortigate_port_gets_its_devices(hass: HomeAssistant, fake_net) -> None:
+    """A Wi-Fi router of its own on FortiGate port internal3, with a subnet Home Assistant isn't on: the FortiGate's
+    ARP table gives the MACs, the router's devices go under it, and the router shows on port internal3."""
+    _lab(fake_net)
+    fake_net.alive |= {WIFI_ROUTER_IP, PHONE_IP}
+    hub = {"id": "wifi_router", "name": "Wi-Fi Router", "type": "access_point", "host": WIFI_ROUTER_IP, "parent": "gateway"}
+    entry = _entry("auto", fortigate_host="192.0.2.1", fortigate_token=TOKEN, extra_subnets=["203.0.113.0/24"])
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "hubs": entry.options.get("hubs", []) + [hub]})
+    with _fortigate():
+        await _run(hass, entry)
+        entry.runtime_data.request_sweep()  # the FortiGate's ARP table is used from the sweep after it is read
+        await entry.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+    nodes = _node_states(hass)
+    phone = next(n.attributes for n in nodes.values() if n.attributes.get("ip") == PHONE_IP)
+    assert phone["mac"].lower() == PHONE_MAC
+    assert phone["link"] == "hub:wifi_router" and phone["placement"] == "fortigate"
+    router = next(n.attributes for n in nodes.values() if n.attributes.get("node_key") == "hub:gateway")
+    ports = {p["name"]: p for p in router["ports"]}
+    assert ports["internal3"]["nodes"] == ["hub:wifi_router"]
+    wifi = next(n.attributes for n in nodes.values() if n.attributes.get("node_key") == "hub:wifi_router")
+    assert wifi["port_name"] == "internal3"
+    # ARP on Home Assistant's own subnet still wins over the FortiGate's table.
+    assert nodes["nas"].attributes["mac"].lower() == "00:00:5e:00:53:12"

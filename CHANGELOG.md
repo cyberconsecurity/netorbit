@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.11.6 (cyberconsecurity fork)
+
+### Added
+- **Subnets behind a FortiGate port.** With *Network: Read* on the FortiGate token, NetOrbit also reads the FortiGate's ARP table. Devices on a subnet Home Assistant only reaches through the FortiGate (a Wi-Fi router plugged into its own FortiGate port, say) now get their MAC addresses even without UniFi, and when exactly one hub sits on that FortiGate port, its devices are drawn under it. Tapping the router shows that hub on its FortiGate port. Home Assistant's own ARP still wins on the subnets it is on.
+
+### Fixed
+- **A switch heard over LLDP is matched to the right hub.** A hub whose MAC was only close to the neighbour's could take the match ahead of the FortiSwitch that really was the neighbour; exact matches (serial, MAC, IP, name) now come first.
+
 ## 2026.11.5 (cyberconsecurity fork)
 
 ### Added
