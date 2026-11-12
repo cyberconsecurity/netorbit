@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.7 (cyberconsecurity fork)
+
+### Fixed
+- **The FortiGate's ARP table is found on FortiOS 7.** 2026.11.6 asked for it at `monitor/system/arp`, which FortiOS 7 answers with 404, so subnets behind a FortiGate port stayed empty. NetOrbit now asks `monitor/network/arp` first and falls back to `monitor/system/arp`, and logs a warning (once) when neither answers.
+
 ## 2026.11.6 (cyberconsecurity fork)
 
 ### Added

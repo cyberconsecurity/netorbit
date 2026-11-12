@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from homeassistant.core import HomeAssistant
 
 from custom_components.netorbit.diagnostics import async_get_config_entry_diagnostics
@@ -14,6 +16,7 @@ from custom_components.netorbit.fortinet import (
     DEVICES_PATH,
     INTERFACES_PATH,
     ARP_PATH,
+    ARP_PATHS,
     LLDP_PATH,
     STATUS_PATH,
     parse_fortigate_arp,
@@ -136,13 +139,15 @@ def test_parse_fortigate_arp() -> None:
     assert parse_fortigate_arp(None) == {}
 
 
-def _fortigate(fail: bool = False, ports: bool = True):
+def _fortigate(fail: bool = False, ports: bool = True, arp_path: str = ARP_PATH):
     async def get(_self, path):
         if fail:
             raise OSError("unreachable")
-        if path in (INTERFACES_PATH, LLDP_PATH, ARP_PATH) and not ports:
+        if path in (INTERFACES_PATH, LLDP_PATH, *ARP_PATHS) and not ports:
             raise PermissionError("403: the token's profile has no Network read")
-        return {STATUS_PATH: STATUS, DEVICES_PATH: DEVICES, INTERFACES_PATH: INTERFACES, LLDP_PATH: LLDP, ARP_PATH: ARP}[path]
+        if path in ARP_PATHS and path != arp_path:
+            raise LookupError("404: not on this FortiOS")
+        return {STATUS_PATH: STATUS, DEVICES_PATH: DEVICES, INTERFACES_PATH: INTERFACES, LLDP_PATH: LLDP, arp_path: ARP}[path]
     return patch("custom_components.netorbit.coordinator.NetOrbitCoordinator._fortigate_get", autospec=True, side_effect=get)
 
 
@@ -289,16 +294,18 @@ async def test_without_network_read_the_fortiswitches_still_work(hass: HomeAssis
     assert router["ports"] is None
 
 
-async def test_a_router_on_a_routed_fortigate_port_gets_its_devices(hass: HomeAssistant, fake_net) -> None:
+@pytest.mark.parametrize("arp_path", ARP_PATHS)
+async def test_a_router_on_a_routed_fortigate_port_gets_its_devices(hass: HomeAssistant, fake_net, arp_path: str) -> None:
     """A Wi-Fi router of its own on FortiGate port internal3, with a subnet Home Assistant isn't on: the FortiGate's
-    ARP table gives the MACs, the router's devices go under it, and the router shows on port internal3."""
+    ARP table gives the MACs, the router's devices go under it, and the router shows on port internal3. FortiOS 7
+    serves the ARP table under network/, some older releases under system/; either is found."""
     _lab(fake_net)
     fake_net.alive |= {WIFI_ROUTER_IP, PHONE_IP}
     hub = {"id": "wifi_router", "name": "Wi-Fi Router", "type": "access_point", "host": WIFI_ROUTER_IP, "parent": "gateway"}
     entry = _entry("auto", fortigate_host="192.0.2.1", fortigate_token=TOKEN, extra_subnets=["203.0.113.0/24"])
     entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(entry, options={**entry.options, "hubs": entry.options.get("hubs", []) + [hub]})
-    with _fortigate():
+    with _fortigate(arp_path=arp_path):
         await _run(hass, entry)
         entry.runtime_data.request_sweep()  # the FortiGate's ARP table is used from the sweep after it is read
         await entry.runtime_data.async_refresh()

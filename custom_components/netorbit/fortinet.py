@@ -178,7 +178,9 @@ def parse_fortigate_ports(interfaces: Any, lldp: Any) -> tuple[dict[int, dict[st
     return ports, neighbors
 
 
-ARP_PATH = "/api/v2/monitor/system/arp"
+# FortiOS 7 has the ARP table under network/; some older releases had it under system/. Tried in this order.
+ARP_PATH = "/api/v2/monitor/network/arp"
+ARP_PATHS = (ARP_PATH, "/api/v2/monitor/system/arp")
 
 
 def parse_fortigate_arp(payload: Any) -> dict[str, tuple[str, str | None]]:

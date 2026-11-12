@@ -106,7 +106,7 @@ from .sources import (
     unifi_online_macs,
 )
 from .fortinet import (
-    ARP_PATH,
+    ARP_PATHS,
     DEVICES_PATH,
     INTERFACES_PATH,
     LLDP_PATH,
@@ -250,6 +250,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._fgt_ports: dict[int, dict[str, Any]] = {}  # the FortiGate's own physical ports
         self._fgt_neighbors: list[dict[str, Any]] = []  # LLDP neighbours heard on them
         self._fgt_arp: dict[str, tuple[str, str | None]] = {}  # IP -> (MAC, FortiGate interface)
+        self._fgt_arp_path: str | None = None  # the ARP endpoint this FortiGate answered on
+        self._fgt_arp_warned = False
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
         self._controller_ips: dict[str, str] = {}  # network device mac -> IP, from the UniFi integration
@@ -655,10 +657,19 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
             pass
         else:
             self._fgt_ports, self._fgt_neighbors = parse_fortigate_ports(interfaces, lldp)
-        try:
-            self._fgt_arp = parse_fortigate_arp(await self._fortigate_get(ARP_PATH))
-        except Exception:  # noqa: BLE001  # needs the same Network read; skipped without it
-            pass
+        for path in (self._fgt_arp_path,) if self._fgt_arp_path else ARP_PATHS:
+            try:
+                self._fgt_arp = parse_fortigate_arp(await self._fortigate_get(path))
+            except Exception as err:  # noqa: BLE001  # missing on this FortiOS, or no read permission
+                last_err = err
+                continue
+            self._fgt_arp_path = path
+            break
+        else:
+            self._fgt_arp_path = None
+            if not self._fgt_arp_warned:
+                _LOGGER.warning("NetOrbit: couldn't read the FortiGate's ARP table: %s", type(last_err).__name__)
+                self._fgt_arp_warned = True
         try:
             status = await self._fortigate_get(STATUS_PATH)
             devices = await self._fortigate_get(DEVICES_PATH)
