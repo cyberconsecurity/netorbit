@@ -3,6 +3,7 @@
 ## 2026.11.5 (cyberconsecurity fork)
 
 ### Changed
+- **The Tree layout goes by levels.** Every hub at one depth now sits at the same height across the whole map, so switches under the router line up even beside a very wide branch. Only end-of-line hubs (such as access points) wrap onto extra rows; a hub with its own branch stays on its level.
 - **Offline colors escalate the usual way round.** A device that stops answering is now orange, and turns red once it has been gone `offline_minutes`, instead of red first and orange later. Legend, chips, lines and shared images follow.
 
 ## 2026.11.4 (cyberconsecurity fork)

@@ -538,8 +538,10 @@ function netorbitTreeLayout(model, opts) {
   const R = 32; // every hub's centre sits as far below its level's top as the router's, so a level lines up
   const radius = (h) => (h === root ? 32 : hubs[h].kind === "group" ? 19 : 25);
   const labelW = (h) => Math.min(String(hubs[h].label == null ? "" : hubs[h].label).length, 26) * o.labW + 10;
-  // A hub with many hubs below it puts them on several rows, each no wider than about a card's worth, instead of
-  // one very long row. With more than one row, each row leaves a lane in the middle for the line down to the next.
+  // The tree goes by levels: every hub at one depth sits at the same height across the whole map. A hub whose hubs
+  // below are all end-of-line hubs (access points, say) may put them on several rows, each no wider than about a
+  // card's worth, with a lane in the middle for the line down; a hub with a branch of its own never wraps, so it stays
+  // on its level.
   const wrapW = Math.max(1000, 900 * o.aspect);
   const lane = o.trunkGap;
   const M = {};
@@ -563,14 +565,16 @@ function netorbitTreeLayout(model, opts) {
     children[h].forEach(measure);
     const rows = [];
     let cur = [];
+    const canWrap = children[h].every((c) => !children[c].length);
     children[h].forEach((c) => {
-      if (cur.length && rowW(cur) + o.hubGap + span(c) > wrapW) { rows.push(cur); cur = []; }
+      if (canWrap && cur.length && rowW(cur) + o.hubGap + span(c) > wrapW) { rows.push(cur); cur = []; }
       cur.push(c);
     });
     if (cur.length) rows.push(cur);
     const multi = rows.length > 1;
     const R2 = rows.map((r) => {
-      const hgt = Math.max.apply(null, r.map((c) => M[c].height));
+      // A row is as tall as its tallest hub with its devices; what hangs below them goes on the next level.
+      const hgt = Math.max.apply(null, r.map((c) => M[c].own));
       if (!multi) return { L: r, R: [], split: false, lw: rowW(r) / 2, rw: rowW(r) / 2, h: hgt };
       // Split the row about evenly by width either side of the lane.
       const total = rowW(r);
@@ -590,6 +594,17 @@ function netorbitTreeLayout(model, opts) {
     };
   };
   measure(root);
+  // Each level's height: the tallest stack of rows any hub one level up puts there.
+  const band = { 0: M[root].own };
+  Object.keys(M).forEach((h) => {
+    const rows = M[h].rows;
+    if (!rows.length) return;
+    const d = depth[h] + 1;
+    const stack = rows.reduce((n, r) => n + r.h, 0) + (rows.length - 1) * o.levelGap;
+    band[d] = Math.max(band[d] || 0, stack);
+  });
+  const levelTop = { 0: 0 };
+  for (let d = 1; band[d] != null; d++) levelTop[d] = levelTop[d - 1] + band[d - 1] + o.levelGap;
 
   const pos = {};
   const place = (h, cx, top, elbow) => {
@@ -608,7 +623,7 @@ function netorbitTreeLayout(model, opts) {
         bus: { y: cy + R + 14, gutter: cellLeft + 4 },
       };
     });
-    let y = top + m.own + o.levelGap;
+    let y = levelTop[depth[h] + 1];
     m.rows.forEach((r) => {
       // The line from the parent turns halfway down the gap above the row.
       const turn = y - o.levelGap / 2;

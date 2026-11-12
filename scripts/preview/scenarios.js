@@ -80,6 +80,11 @@
     bigswitch: summary(build((hub, dev) => {
       hub("gateway", "Router", "router", null);
       hub("core", "Core Switch 24", "switch", "gateway");
+      // A FortiSwitch pair and a Flex Mini beside the core switch, to check the tree keeps them on one level.
+      hub("fsw1", "FortiSwitch 124EF", "switch", "gateway");
+      hub("fsw2", "FortiSwitch 108EP", "switch", "fsw1");
+      hub("flex", "Switch Flex Mini Office", "switch", "gateway");
+      for (let i = 0; i < 18; i++) dev(`lab-vm-${i}`, "mdi:server", "fsw1", "online");
       const aps = ["AP-Basement", "AP-Den", "AP-Familyroom", "AP-Garage", "AP-Gate", "AP-Hottub", "AP-Workshop-Bridge"];
       const sws = ["Camera-Backyard", "Switch Attic", "Switch Bedroom", "Switch Hot Tub", "Switch Driveway", "Switch Familyroom", "Switch Kaden", "Switch Kitchen", "Switch-Flex-HT", "Switch-Flex-Mini-Office", "Switch-24-G2"];
       aps.forEach((l, i) => hub("ap" + i, l, "access_point", "core"));

@@ -983,3 +983,25 @@ test("offline colors escalate: orange while recently gone, red once gone longer 
   assert.strictEqual(line("sw-d0"), "#fb923c", "just went offline: orange");
   assert.strictEqual(line("sw-d1"), "#ef4444", "gone past the offline time: red");
 });
+
+test("tree layout goes by levels: hubs at one depth line up across branches, even beside a very wide branch", () => {
+  // The router has three switches; the FortiSwitch has one below it, the core switch a big grid and many APs.
+  const hubs = [["r", null], ["forti", "r"], ["flex", "r"], ["core", "r"], ["forti2", "forti"]];
+  const aps = [];
+  for (let i = 0; i < 9; i++) { hubs.push([`ap${i}`, "core"]); aps.push(`ap${i}`); }
+  const devs = { forti: 18, core: 24 };
+  aps.forEach((a, i) => (devs[a] = 4 + (i % 4) * 3));
+  const m = model(hubs, devs);
+  m.internet = { key: "internet", status: "online" };
+  const L = NO.netorbitTreeLayout(m, { aspect: 1.7 });
+  assert.strictEqual(L.pos.forti.y, L.pos.core.y, "FortiSwitch level with the core switch");
+  assert.strictEqual(L.pos.flex.y, L.pos.core.y, "Flex Mini level with the core switch");
+  // Depth two: the FortiSwitch's child lines up with the first row of access points.
+  const apY = Math.min(...aps.map((a) => L.pos[a].y));
+  assert.strictEqual(L.pos.forti2.y, apY);
+  // The APs (end-of-line hubs) still wrap onto rows rather than one endless line.
+  assert.ok(new Set(aps.map((a) => L.pos[a].y)).size >= 2, "access points wrap");
+  // Every level is below the one above, and nothing overlaps.
+  assert.ok(L.pos.core.y > L.pos.r.y && apY > L.pos.core.y);
+  assertNoOverlap(m, netorbitDraw(m, {}, { layout: "tree", aspect: 1.7 }), "levels");
+});
