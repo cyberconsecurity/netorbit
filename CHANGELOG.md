@@ -2,8 +2,10 @@
 
 ## 2026.11.5 (cyberconsecurity fork)
 
-### Changed
+### Added
 - **The FortiGate's own ports.** With *Network: Read* added to the FortiGate token's profile, tapping the router shows the FortiGate's physical ports (wan1, internal1, a, b...) with link state and speed, and each switch it hears over LLDP shows which FortiGate port it is on, such as the FortiSwitch on port *b*. Without that permission everything else still works. UniFi and other switches show up once LLDP reception is on for the FortiGate ports they plug into.
+
+### Changed
 - **The Tree layout goes by levels.** Every hub at one depth now sits at the same height across the whole map, so switches under the router line up even beside a very wide branch. Only end-of-line hubs (such as access points) wrap onto extra rows; a hub with its own branch stays on its level.
 - **Offline colors escalate the usual way round.** A device that stops answering is now orange, and turns red once it has been gone `offline_minutes`, instead of red first and orange later. Legend, chips, lines and shared images follow.
 
