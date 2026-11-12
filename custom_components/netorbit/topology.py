@@ -212,6 +212,7 @@ def switch_ports(
         out.append({
             "port": port,
             "name": meta.get("name"),
+            "label": meta.get("label"),
             "alias": meta.get("alias"),
             "speed": meta.get("speed"),
             "up": meta.get("up"),

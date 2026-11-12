@@ -126,3 +126,53 @@ def parse_fortiswitches(status: Any, devices: Any) -> dict[str, FortiSwitch]:
             continue
         fs.table[mac] = port
     return switches
+
+
+INTERFACES_PATH = "/api/v2/monitor/system/interface"
+LLDP_PATH = "/api/v2/monitor/network/lldp/neighbors"
+
+_SHORT = (("internal", "int"), ("port", "p"), ("wan", "wan"), ("dmz", "dmz"))
+
+
+def port_label(name: str) -> str:
+    """A short label for a FortiGate port that fits a port button: "internal3" -> "int3", "wan1" stays."""
+    low = name.lower()
+    for long, short in _SHORT:
+        if low.startswith(long) and low[len(long):].isdigit():
+            return short + low[len(long):]
+    return name[:5]
+
+
+def parse_fortigate_ports(interfaces: Any, lldp: Any) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """The FortiGate's own physical ports and the LLDP neighbours heard on them.
+
+    Returns ({n: {"name", "label", "alias", "speed", "up"}}, [{"port": n, "port_name", "system_name", "mac",
+    "chassis", "ip"}]). Ports are numbered 1.. in the order the FortiGate lists them, and only physical ones are kept:
+    VLANs, tunnels and the modem report an all-zero MAC.
+    """
+    rows = interfaces.get("results") if isinstance(interfaces, dict) else None
+    ports: dict[int, dict[str, Any]] = {}
+    by_name: dict[str, int] = {}
+    if isinstance(rows, dict):
+        for name, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            mac = normalize_mac(row.get("mac"))
+            if not mac or mac == "00:00:00:00:00:00":
+                continue
+            n = len(ports) + 1
+            up = bool(row.get("link"))
+            speed = row.get("speed")
+            alias = str(row.get("alias") or "").strip().strip("()") or None
+            ports[n] = {"name": str(name), "label": port_label(str(name)), "alias": alias,
+                        "speed": int(speed) if up and isinstance(speed, (int, float)) and speed > 0 else None, "up": up}
+            by_name[str(name)] = n
+    neighbors: list[dict[str, Any]] = []
+    for row in _results(lldp):
+        n = by_name.get(str(row.get("port_name") or ""))
+        if n is None:
+            continue
+        ip = next((a.get("address") for a in row.get("addresses") or [] if isinstance(a, dict) and a.get("type") == "ipv4"), None)
+        neighbors.append({"port": n, "port_name": ports[n]["name"], "system_name": str(row.get("system_name") or "").strip() or None,
+                          "mac": normalize_mac(row.get("mac")), "chassis": normalize_mac(row.get("chassis_id")), "ip": ip})
+    return ports, neighbors

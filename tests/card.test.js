@@ -1005,3 +1005,14 @@ test("tree layout goes by levels: hubs at one depth line up across branches, eve
   assert.ok(L.pos.core.y > L.pos.r.y && apY > L.pos.core.y);
   assertNoOverlap(m, netorbitDraw(m, {}, { layout: "tree", aspect: 1.7 }), "levels");
 });
+
+
+test("port titles: a FortiGate's named ports read by name, switch ports by number", () => {
+  assert.strictEqual(NO.noPortTitle(10, "b"), "b");
+  assert.strictEqual(NO.noPortTitle(9, "internal3"), "internal3");
+  assert.strictEqual(NO.noPortTitle(7, "Gi1/0/7"), "7 (Gi1/0/7)");
+  assert.strictEqual(NO.noPortTitle(7, "port7"), "7");
+  assert.strictEqual(NO.noPortTitle(7, null), "7");
+  const v = NO.netorbitPortView({ key: "hub:gateway", kind: "hub", ports: [{ port: 3, name: "internal1", label: "int1", up: true, nodes: [] }] }, {}, {});
+  assert.strictEqual(v[0].label, "int1");
+});

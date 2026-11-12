@@ -105,7 +105,7 @@ from .sources import (
     unifi_network,
     unifi_online_macs,
 )
-from .fortinet import DEVICES_PATH, STATUS_PATH, parse_fortiswitches
+from .fortinet import DEVICES_PATH, INTERFACES_PATH, LLDP_PATH, STATUS_PATH, parse_fortigate_ports, parse_fortiswitches
 from .topology import Topology, infer, macs_close, switch_ports
 
 _LOGGER = logging.getLogger(__name__)
@@ -238,6 +238,8 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         self._forti: dict[str, Any] = {}  # serial -> FortiSwitch, from the FortiGate's API
         self._forti_hubs: dict[str, str] = {}  # serial -> hub id
         self._forti_warned = False
+        self._fgt_ports: dict[int, dict[str, Any]] = {}  # the FortiGate's own physical ports
+        self._fgt_neighbors: list[dict[str, Any]] = []  # LLDP neighbours heard on them
         self._topology = Topology()
         self._controller_ap: dict[str, str] = {}
         self._controller_ips: dict[str, str] = {}  # network device mac -> IP, from the UniFi integration
@@ -628,7 +630,17 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
         never logged."""
         if not self.opts.get(CONF_FGT_HOST) or not self.opts.get(CONF_FGT_TOKEN):
             self._forti, self._forti_hubs = {}, {}
+            self._fgt_ports, self._fgt_neighbors = {}, []
             return
+        # The FortiGate's own ports and what LLDP hears on them. These need "Network: Read" on the token's profile;
+        # without it they are skipped and the FortiSwitches still work.
+        try:
+            interfaces = await self._fortigate_get(INTERFACES_PATH)
+            lldp = await self._fortigate_get(LLDP_PATH)
+        except Exception:  # noqa: BLE001
+            pass
+        else:
+            self._fgt_ports, self._fgt_neighbors = parse_fortigate_ports(interfaces, lldp)
         try:
             status = await self._fortigate_get(STATUS_PATH)
             devices = await self._fortigate_get(DEVICES_PATH)
@@ -1297,6 +1309,10 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
     def _attach_ports(self, nodes: dict[str, Node]) -> None:
         """Give every switch with a MAC table its list of ports, and every node right under one the port
         (and speed) it is plugged into. Uses the map as built, so a device placed by hand counts too."""
+        try:
+            self._attach_fortigate_ports(nodes)
+        except Exception as err:  # noqa: BLE001  # an extra: never let it cost the map
+            _LOGGER.debug("NetOrbit couldn't attach the FortiGate's ports: %s", err)
         if not self._tables:
             return
         hub_macs = {k: v.lower() for k, v in self._hub_macs().items() if v}
@@ -1324,6 +1340,50 @@ class NetOrbitCoordinator(DataUpdateCoordinator[NetOrbitData]):
                     child = nodes.get(key)
                     if child is not None:
                         child.port, child.port_name, child.port_speed = entry["port"], entry["name"], entry["speed"]
+
+    def _attach_fortigate_ports(self, nodes: dict[str, Node]) -> None:
+        """When the router is a FortiGate NetOrbit can read: its physical ports as the router's port view, and each
+        hub LLDP hears on one of them told which port that is."""
+        root = nodes.get(f"hub:{ROOT_HUB_ID}")
+        if root is None or not self._fgt_ports:
+            return
+        serials = {h["id"]: h.get("forti_serial") for h in self.opts[CONF_HUBS] if h.get("forti_serial")}
+        on_port: dict[int, list[str]] = {}
+        for nb in self._fgt_neighbors:
+            hub = self._hub_for_neighbor(nodes, nb, serials)
+            if hub is not None and hub.key not in on_port.get(nb["port"], []):
+                on_port.setdefault(nb["port"], []).append(hub.key)
+        ports = []
+        for n, info in sorted(self._fgt_ports.items()):
+            keys = on_port.get(n, [])
+            ports.append({
+                "port": n, "name": info["name"], "label": info["label"], "alias": info["alias"], "speed": info["speed"],
+                "up": info["up"], "uplink": info["name"].lower().startswith("wan") and bool(info["up"]),
+                "nodes": keys, "macs": 0,
+            })
+            for key in keys:
+                child = nodes[key]
+                child.port, child.port_name, child.port_speed = n, info["name"], info["speed"]
+        root.ports = ports
+
+    def _hub_for_neighbor(self, nodes: dict[str, Node], nb: dict[str, Any], serials: dict[str, str]) -> Node | None:
+        """The hub an LLDP neighbour is: a FortiSwitch by serial, anything else by MAC, management IP or name."""
+        name = (nb.get("system_name") or "").lower()
+        macs = {m for m in (nb.get("mac"), nb.get("chassis")) if m}
+        for node in nodes.values():
+            if node.kind != "hub" or node.key == f"hub:{ROOT_HUB_ID}":
+                continue
+            hub_id = node.key.split(":", 1)[1]
+            if serials.get(hub_id) and serials[hub_id].lower() == name:
+                return node
+            mac = (node.mac or "").lower()
+            if mac and (mac in macs or any(macs_close(mac, m) for m in macs)):
+                return node
+            if nb.get("ip") and node.ip == nb["ip"]:
+                return node
+            if name and node.name.lower() == name:
+                return node
+        return None
 
     @staticmethod
     def _rollup_hubs(nodes: dict[str, Node], addressless: dict[str, str]) -> None:

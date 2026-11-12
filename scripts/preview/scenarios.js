@@ -189,6 +189,18 @@
     byLabel("Office Switch").attributes.ports = [{ port: 1, name: "Port 1", speed: 10000, up: true, uplink: true, nodes: [], macs: 30 }]
       .concat(office.map((l, i) => ({ port: i + 2, name: "Port " + (i + 2), speed: speeds[i], up: true, uplink: false, nodes: [key(l)], macs: 1 })))
       .concat([9, 10, 11, 12, 13, 14, 15, 16].map((p) => ({ port: p, name: "Port " + p, speed: null, up: p === 12 ? true : false, uplink: false, nodes: [], macs: 0 })));
+    // The router as a FortiGate: its own named ports, the core switch heard over LLDP on internal2.
+    const gw = Object.values(full).find((x) => x.attributes.node_key === "hub:gateway");
+    if (gw) {
+      const fp = (port, name, label, up, speed, nodes, extra) => Object.assign({ port, name, label, up, speed: up ? speed : null, nodes: nodes || [], macs: 0 }, extra || {});
+      gw.attributes.ports = [
+        fp(1, "wan1", "wan1", true, 1000, [], { uplink: true }), fp(2, "wan2", "wan2", false, 0, [], { alias: "Management_Use" }),
+        fp(3, "dmz", "dmz", true, 1000), fp(4, "internal1", "int1", true, 1000), fp(5, "internal2", "int2", true, 1000, [key("Core Switch")]),
+        fp(6, "internal3", "int3", true, 1000), fp(7, "internal4", "int4", false, 0), fp(8, "internal5", "int5", true, 100),
+        fp(9, "a", "a", true, 1000, [], { alias: "Backup WAN" }), fp(10, "b", "b", true, 1000),
+      ];
+      Object.assign(byLabel("Core Switch").attributes, { port: 5, port_name: "internal2", port_speed: 1000 });
+    }
     // Went quiet ten minutes ago: red with offline colors (orange after an hour).
     Object.assign(byLabel("Game Console").attributes, { last_seen: new Date(Date.now() - 10 * 60e3).toISOString() });
     byLabel("Game Console").state = "recent";

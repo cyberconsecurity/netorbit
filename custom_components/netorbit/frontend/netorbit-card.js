@@ -754,11 +754,18 @@ function noPortName(port, name) {
   return s.replace(/[\s_-]+/g, "").toLowerCase().replace(/^(port|p)/, "") === String(port) ? "" : s;
 }
 
+/** How a port reads: its name alone when the number is only a position in a list (a FortiGate's "b" or
+ * "internal3"), "7 (Gi1/0/7)" when the name carries the number, plain "7" when the name adds nothing. */
+function noPortTitle(port, name) {
+  const nm = noPortName(port, name);
+  if (!nm) return String(port);
+  return /\d+$/.test(nm) && nm.replace(/^.*?(\d+)$/, "$1") === String(port) ? `${port} (${nm})` : nm;
+}
+
 /** "7 (Gi1/0/7) · 1 Gb/s" for a node plugged into a switch port. */
 function noPortText(n) {
   if (!n || !n.port) return "";
-  const name = noPortName(n.port, n.port_name);
-  return `${n.port}${name ? ` (${name})` : ""}${n.port_speed ? ` · ${noSpeedText(n.port_speed)}` : ""}`;
+  return `${noPortTitle(n.port, n.port_name)}${n.port_speed ? ` · ${noSpeedText(n.port_speed)}` : ""}`;
 }
 
 /** The port view of a switch: one entry per port with its state ("used", "learned": addresses but nothing
@@ -776,7 +783,7 @@ function netorbitPortView(sw, all, hubs) {
       lines = [sw.key];
     }
     const state = q.up === false ? "down" : nodes.length || q.uplink ? "used" : q.macs ? "learned" : q.up === true ? "idle" : "unknown";
-    return { port: q.port, name: q.name || null, alias: q.alias || null, speed: q.speed || null, up: q.up, uplink: !!q.uplink, macs: q.macs || 0, nodes, targets, lines, state, node: nodes[0] || (q.uplink ? sw.parent : null) };
+    return { port: q.port, name: q.name || null, label: q.label || null, alias: q.alias || null, speed: q.speed || null, up: q.up, uplink: !!q.uplink, macs: q.macs || 0, nodes, targets, lines, state, node: nodes[0] || (q.uplink ? sw.parent : null) };
   });
 }
 
@@ -2028,8 +2035,8 @@ class NetOrbitCard extends HTMLElement {
   svg.map .hlring { fill:none; stroke:#f8fafc; stroke-width:2; stroke-dasharray:4 4; animation: spin 4s linear infinite; transform-box:fill-box; transform-origin:center; pointer-events:none; }
   .pop.ports { width:auto; min-width:260px; max-width:min(560px, calc(100% - 8px)); box-sizing:border-box; }
   .face { margin-top:10px; padding:8px; border-radius:8px; background:#020617; border:1px solid rgba(148,163,184,.25); overflow-x:auto; }
-  .face .grid { display:grid; grid-auto-flow:column; grid-template-rows:repeat(var(--rows), 30px); grid-auto-columns:30px; gap:5px; width:max-content; }
-  .face button.pt { flex:none; width:30px; height:30px; padding:0; margin:0; border-radius:4px; font:inherit; font-size:10.5px; font-variant-numeric:tabular-nums; line-height:1; display:flex; align-items:center; justify-content:center; position:relative; cursor:pointer; color:#0b1220; border:1.5px solid transparent; background:#1e293b; }
+  .face .grid { display:grid; grid-auto-flow:column; grid-template-rows:repeat(var(--rows), 30px); grid-auto-columns:minmax(30px, auto); gap:5px; width:max-content; }
+  .face button.pt { flex:none; min-width:30px; width:auto; height:30px; padding:0 4px; margin:0; border-radius:4px; font:inherit; font-size:10.5px; font-variant-numeric:tabular-nums; line-height:1; display:flex; align-items:center; justify-content:center; position:relative; cursor:pointer; color:#0b1220; border:1.5px solid transparent; background:#1e293b; }
   .face button.pt.down { background:#111827; color:#475569; border-color:#1f2937; }
   .face button.pt.idle { background:#0f172a; color:#86efac; border-color:rgba(52,211,153,.45); }
   .face button.pt.unk { background:#0f172a; color:#cbd5e1; border-color:rgba(148,163,184,.55); border-style:dashed; }
@@ -3240,10 +3247,9 @@ class NetOrbitCard extends HTMLElement {
       const b = q.node && noSpeed(q.speed);
       const cls = q.state === "down" ? "down" : q.state === "used" ? "up" : q.state === "learned" ? "unk" : q.state === "idle" ? "idle" : "unk";
       const bg = cls === "up" ? (b ? b.color : NO_STATUS.online.color) : "";
-      const nm = noPortName(q.port, q.name);
-      const tip = `Port ${q.port}${nm ? ` (${nm})` : ""}${q.speed ? ` · ${noSpeedText(q.speed)}` : ""}${q.uplink ? " · uplink" : ""}`;
+      const tip = `Port ${noPortTitle(q.port, q.name)}${q.alias ? ` "${q.alias}"` : ""}${q.speed ? ` · ${noSpeedText(q.speed)}` : ""}${q.uplink ? " · uplink" : ""}`;
       return `<button class="pt ${cls}" data-p="${q.port}" title="${noEsc(tip)}" aria-label="${noEsc(tip)}"${bg ? ` style="background:${bg};border-color:${bg}"` : ""}>` +
-        `${q.port}${q.uplink ? `<span class="ul">▲</span>` : ""}</button>`;
+        `${noEsc(q.label || q.port)}${q.uplink ? `<span class="ul">▲</span>` : ""}</button>`;
     };
     const keys = `<div class="keys"><span><i style="background:${NO_STATUS.online.color}"></i>In use</span>` +
       `<span><i style="border:1.5px solid rgba(52,211,153,.6)"></i>Link up, nothing tracked</span>` +
@@ -3278,8 +3284,7 @@ class NetOrbitCard extends HTMLElement {
         const off = shown.missing.indexOf(k) >= 0 ? ` <span class="muted">(not on the map right now)</span>` : "";
         return `<div class="mrow" data-k="${noEsc(k)}"><i style="background:${col(t.status)}"></i>${noEsc(t.label)}${off}<span>${noEsc(t.kind === "hub" ? (NO_HUB_TYPE[t.hub_type] || "Hub") : (t.ip || ""))}</span></div>`;
       };
-      const nm = noPortName(port.port, port.name);
-      const head = `<div class="t">Port ${port.port}${nm ? ` · ${noEsc(nm)}` : ""}</div>` +
+      const head = `<div class="t">Port ${noEsc(noPortTitle(port.port, port.name))}</div>` +
         `<div class="muted">${[port.state === "down" ? "Link down" : port.up === true ? "Link up" : "", port.speed ? noSpeedText(port.speed) : "", port.alias ? `"${noEsc(port.alias)}"` : ""].filter(Boolean).join(" · ")}</div>`;
       let what;
       if (port.uplink) what = `<div style="margin-top:4px">Uplink${port.targets.length ? ` to:` : "."}</div>${port.targets.map(row).join("")}`;
@@ -3461,5 +3466,5 @@ if (!window.customCards.find((c) => c.type === "netorbit-card")) {
     documentationURL: "https://github.com/cyberconsecurity/netorbit",
   });
 }
-if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, netorbitLayout, netorbitBalloonLayout, netorbitTreeLayout, netorbitSeparate, netorbitLiveStatus, netorbitPortView, netorbitHasPorts, noSpeed, noSpeedText, noMinutes, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
+if (typeof module !== "undefined") module.exports = { NetOrbitCard, noLayoutKey, noPortTitle, netorbitLayout, netorbitBalloonLayout, netorbitTreeLayout, netorbitSeparate, netorbitLiveStatus, netorbitPortView, netorbitHasPorts, noSpeed, noSpeedText, noMinutes, netorbitFocus, noGroupFor, noHeight, netorbitZoomView, netorbitScanMode, netorbitScanText, shareModel, netorbitShareSvg, netorbitDraw, netorbitRevealNode, netorbitRevealGlobal, noPartialPath, noShareType, noFramePump, noPrivateMac, noLink, noParseFields };
 console.info("%c NETORBIT %c " + NETORBIT_VERSION, "color:#0b1220;background:#34d399;font-weight:700", "color:#34d399");

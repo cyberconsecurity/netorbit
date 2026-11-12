@@ -87,7 +87,17 @@ FortiSwitches managed by a FortiGate over FortiLink don't answer SNMP, and the F
 2. Go to **System > Administrators > Create New > REST API Admin**. Pick the profile you just made, turn off **PKI Group**, and under **Trusted Hosts** enter only your Home Assistant's address (for example `192.0.2.50/32`). Save, and copy the token it shows. It is shown only once.
 3. In Home Assistant, go to **Settings > Devices & services > NetOrbit > Configure > Settings**. Enter the FortiGate's address under **FortiGate address** (add `:port` if its admin page isn't on 443) and paste the token. Leave **Check the FortiGate's certificate** off unless it has a certificate Home Assistant trusts.
 
-On the next scan each FortiSwitch shows up as a hub under the FortiGate, or under the FortiSwitch it hangs off, with its devices on the ports the FortiGate saw them on. Tap one to see its ports. NetOrbit only sends GET requests to two monitor endpoints (`switch-controller/managed-switch/status` and `switch-controller/detected-device`), never logs the token, and leaves both the address and the token out of diagnostics.
+To also see which FortiGate port each switch is on, and the FortiGate's own ports when you tap the router, add **Network** set to **Read** to the same admin profile. NetOrbit then reads the FortiGate's interfaces and its LLDP neighbours. A FortiSwitch is heard over FortiLink straight away; for other switches (UniFi and the like), turn on LLDP reception on the FortiGate ports they plug into:
+
+```
+config system interface
+    edit internal1
+        set lldp-reception enable
+    next
+end
+```
+
+On the next scan each FortiSwitch shows up as a hub under the FortiGate, or under the FortiSwitch it hangs off, with its devices on the ports the FortiGate saw them on. Tap one to see its ports. NetOrbit only sends GET requests to monitor endpoints (`switch-controller/managed-switch/status`, `switch-controller/detected-device`, and with Network read `system/interface` and `network/lldp/neighbors`), never logs the token, and leaves both the address and the token out of diagnostics.
 
 ## 3. Finish the rest by hand (about a minute)
 
